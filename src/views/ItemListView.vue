@@ -471,12 +471,12 @@ async function saveCategory() {
               <td class="px-4 py-3 font-mono" style="color: var(--color-text-muted)">{{ item.item_code }}</td>
               <td class="px-4 py-3 font-medium" style="color: var(--color-text-primary)">{{ item.item_name }}</td>
               <td class="px-4 py-3" style="color: var(--color-text-secondary)">
-                <span class="px-2 py-0.5 rounded-full text-[11px] bg-blue-50 dark:bg-blue-500/30 text-blue-600 dark:text-blue-500 border border-blue-100 dark:border-blue-600/30">
+                <span class="px-2 py-0.5 rounded-full text-[11px] bg-blue-50 dark:bg-blue-800/30 text-blue-700 hover:bg-blue-100 dark:text-blue-300 border border-blue-600 dark:border-blue-800/30 transition-colors cursor-w-resize">
                   {{ item.category?.category_name || 'ไม่มีประเภท' }}
                 </span>
               </td>
               <td class="px-4 py-3 font-bold text-right">
-                <span class="rounded-md px-1 py-0.5 text-center item-center" :class="item.current_stock <= 5 ? 'bg-red-100 dark:bg-red-600/30 text-red dark:text-red-500' : 'bg-green-100 dark:bg-green-600/30 text-emerald-600 dark:text-green-500'">{{ item.current_stock }} {{ item.unit }}</span>
+                <span class="rounded-md px-1 py-0.5 text-center item-center" :class="item.current_stock <= 5 ? 'bg-red-100 dark:bg-red-600/30 text-red-600 dark:text-red-500' : 'bg-green-100 dark:bg-green-600/30 text-emerald-600 dark:text-green-500'">{{ item.current_stock }} {{ item.unit }}</span>
               </td>
               <!-- <td class="px-4 py-3" style="color: var(--color-text-muted)">{{ item.unit }}</td> -->
               <td class="px-4 py-3 text-center" style="color: var(--color-text-secondary)">{{ item.creator?.fullname || '-' }}</td>
@@ -513,17 +513,17 @@ async function saveCategory() {
           <div class="flex-1 overflow-y-auto p-6 space-y-4">
             <div class="space-y-1">
               <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">รหัสสินค้า</label>
-              <input v-model="itemForm.item_code" type="text" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)" />
+              <input v-model="itemForm.item_code" placeholder="กรอกรหัสสินค้า" type="text" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)" />
             </div>
             <div class="space-y-1">
               <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">ชื่อสินค้า</label>
-              <input v-model="itemForm.item_name" type="text" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)" />
+              <input v-model="itemForm.item_name" placeholder="กรอกชื่อสินค้า" type="text" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)" />
             </div>
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-1">
                 <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">ประเภทสินค้า</label>
                 <select v-model="itemForm.category_id" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body); color: var(--color-text-primary)">
-                  <option v-for="cat in categories" :key="cat.id" :value="cat.id" style="background-color: var(--color-bg-body)">{{ cat.category_name }}</option>
+                  <option v-for="cat in categories" :key="cat.id" :value="cat.id" style="background-color: var(--color-bg-card)">{{ cat.category_name }}</option>
                 </select>
               </div>
               <div class="space-y-1">
@@ -537,7 +537,7 @@ async function saveCategory() {
             </div>
             <div class="space-y-1">
               <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">หมายเหตุ</label>
-              <textarea v-model="itemForm.remark" rows="3" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)"></textarea>
+              <textarea v-model="itemForm.remark" placeholder="คำอธิบาย(ถ้ามี)" rows="3" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)"></textarea>
             </div>
             <div class="space-y-1">
               <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">แนบไฟล์ (เอกสาร/รูป)</label>

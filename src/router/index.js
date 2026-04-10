@@ -10,6 +10,8 @@ import HistoryListView from '@/views/historyListView.vue'
 import EmployeeLisView from '@/views/EmployeeLisView.vue'
 import SystemusersLisView from '@/views/SystemusersLisView.vue'
 import UserLogsLisView from '@/views/userLogsLisView.vue'
+import ImportMoreListView from '@/views/ImportMoreListView.vue'
+
 
 const routes = [
   { path: '/', component: LoginView, meta: { requiresAuth: false } },
@@ -23,6 +25,7 @@ const routes = [
   { path: '/employees', component: EmployeeLisView, meta: { requiresAuth: true } },
   { path: '/system-users', component: SystemusersLisView, meta: { requiresAuth: true } },
   { path: '/logs', component: UserLogsLisView, meta: { requiresAuth: true } },
+  { path: '/imports', component: ImportMoreListView, meta: { requiresAuth: true } },
 ]
 
 const router = createRouter({
