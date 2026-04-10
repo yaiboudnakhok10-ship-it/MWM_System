@@ -6,6 +6,8 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 
+const DOCUMENT_BUCKET = 'document_url'
+
 // State
 const items = ref([])
 const categories = ref([])
@@ -19,6 +21,9 @@ const isCategoryModalOpen = ref(false)
 const isRestockModalOpen = ref(false)
 const isEditingCategory = ref(false)
 const saving = ref(false)
+
+const itemDocumentFile = ref(null)
+const restockDocumentFile = ref(null)
 
 // Watch for sidebar/modal open state to prevent body scrolling
 watch([isSidebarOpen, isCategoryModalOpen, isRestockModalOpen], ([sidebar, category, restock]) => {
@@ -83,6 +88,31 @@ onMounted(() => {
   fetchData()
 })
 
+function makeStoragePath(file, type) {
+  const ext = file.name.includes('.') ? file.name.split('.').pop() : 'bin'
+  const timestamp = Date.now()
+  const baseName = file.name.replace(/\.[^/.]+$/, '')
+  const safeName = baseName.replace(/[^a-zA-Z0-9_-]/g, '_')
+  return `${auth.user?.id || 'anonymous'}/${type}/${timestamp}-${safeName}.${ext}`
+}
+
+async function uploadDocumentToStorage(file, type) {
+  if (!file) return null
+  const path = makeStoragePath(file, type)
+  const { error: uploadError } = await supabase.storage.from(DOCUMENT_BUCKET).upload(path, file, { upsert: false })
+  if (uploadError) throw uploadError
+  const { data } = supabase.storage.from(DOCUMENT_BUCKET).getPublicUrl(path)
+  return data.publicUrl
+}
+
+function onItemDocumentSelected(event) {
+  itemDocumentFile.value = event.target.files?.[0] || null
+}
+
+function onRestockDocumentSelected(event) {
+  restockDocumentFile.value = event.target.files?.[0] || null
+}
+
 // Computed
 const filteredItems = computed(() => {
   return items.value.filter(item => {
@@ -103,6 +133,7 @@ function openAddItemSidebar() {
     unit: 'ชิ้น',
     remark: ''
   }
+  itemDocumentFile.value = null
   isSidebarOpen.value = true
 }
 
@@ -114,10 +145,21 @@ async function saveItem() {
 
   saving.value = true
   try {
+    const warnings = []
+    let uploadedDocumentUrl = null
+    if (itemDocumentFile.value) {
+      try {
+        uploadedDocumentUrl = await uploadDocumentToStorage(itemDocumentFile.value, 'items')
+      } catch (err) {
+        console.error('Upload document failed:', err.message)
+        warnings.push(`เอกสาร/รูปอัปโหลดไม่สำเร็จ (${err.message})`)
+      }
+    }
+
     // 1. Check if item exists
     let { data: existingItem, error: findError } = await supabase
       .from('items')
-      .select('id')
+      .select('id, document_url')
       .eq('item_code', itemForm.value.item_code)
       .maybeSingle()
 
@@ -128,9 +170,14 @@ async function saveItem() {
     if (existingItem) {
       itemId = existingItem.id
       // Update existing item stock (though trigger handles it, we might want to log who updated it)
-      await supabase.from('items').update({
-        updated_by: auth.user.id
-      }).eq('id', itemId)
+      const { error: updateItemError } = await supabase
+        .from('items')
+        .update({
+          updated_by: auth.user.id,
+          document_url: uploadedDocumentUrl || existingItem.document_url || null
+        })
+        .eq('id', itemId)
+      if (updateItemError) throw updateItemError
     } else {
       // 2. Insert into items
       const { data: newItem, error: insertItemError } = await supabase
@@ -141,6 +188,7 @@ async function saveItem() {
           category_id: itemForm.value.category_id,
           unit: itemForm.value.unit,
           remark: itemForm.value.remark,
+          document_url: uploadedDocumentUrl || null,
           current_stock: 0, // Will be updated by trigger
           created_by: auth.user.id,
           updated_by: auth.user.id
@@ -153,19 +201,34 @@ async function saveItem() {
     }
 
     // 3. Insert into inventory_imports
-    const { error: importError } = await supabase
-      .from('inventory_imports')
-      .insert({
-        item_id: itemId,
-        amount: itemForm.value.amount,
-        unit: itemForm.value.unit,
-        remark: itemForm.value.remark,
-        note: 'นำเข้าสินค้า',
-        created_by: auth.user.id,
-        updated_by: auth.user.id
-      })
-    
-    if (importError) throw importError
+    const importPayloadBase = {
+      item_id: itemId,
+      amount: itemForm.value.amount,
+      unit: itemForm.value.unit,
+      remark: itemForm.value.remark,
+      note: 'นำเข้าสินค้า',
+      created_by: auth.user.id,
+      updated_by: auth.user.id
+    }
+
+    // ถ้าตาราง inventory_imports มีคอลัมน์ document_url ให้บันทึกลงด้วย
+    let importError = null
+    if (uploadedDocumentUrl) {
+      const { error } = await supabase.from('inventory_imports').insert({ ...importPayloadBase, document_url: uploadedDocumentUrl })
+      importError = error
+      if (importError && String(importError.message || '').includes('document_url')) {
+        // fallback: ถ้าไม่มีคอลัมน์ ให้บันทึกเฉพาะ remark (ไม่ล้มทั้งรายการ)
+        warnings.push('ตาราง inventory_imports ไม่มีคอลัมน์ document_url จึงบันทึกลิงก์ไว้ที่รายการสินค้าแทน')
+        importError = null
+        const { error: retryErr } = await supabase.from('inventory_imports').insert(importPayloadBase)
+        if (retryErr) throw retryErr
+      } else if (importError) {
+        throw importError
+      }
+    } else {
+      const { error } = await supabase.from('inventory_imports').insert(importPayloadBase)
+      if (error) throw error
+    }
 
     // 4. Log the action
     await supabase.from('user_logs').insert({
@@ -181,7 +244,8 @@ async function saveItem() {
     // Success
     isSidebarOpen.value = false
     await fetchData()
-    alert('บันทึกข้อมูลสำเร็จ')
+    if (warnings.length) alert('บันทึกข้อมูลสำเร็จ\n\n' + warnings.join('\n'))
+    else alert('บันทึกข้อมูลสำเร็จ')
   } catch (err) {
     console.error(err)
     alert('Error saving item: ' + err.message)
@@ -216,6 +280,7 @@ function openRestockModal(item) {
     unit: item.unit,
     remark: ''
   }
+  restockDocumentFile.value = null
   isRestockModalOpen.value = true
 }
 
@@ -227,20 +292,41 @@ async function handleRestock() {
 
   saving.value = true
   try {
+    const warnings = []
+    let uploadedDocumentUrl = null
+    if (restockDocumentFile.value) {
+      try {
+        uploadedDocumentUrl = await uploadDocumentToStorage(restockDocumentFile.value, 'restock')
+      } catch (err) {
+        console.error('Upload document failed:', err.message)
+        warnings.push(`เอกสาร/รูปอัปโหลดไม่สำเร็จ (${err.message})`)
+      }
+    }
+
     // Insert into inventory_imports (Trigger handles current_stock in items)
-    const { error: importError } = await supabase
-      .from('inventory_imports')
-      .insert({
-        item_id: restockForm.value.item_id,
-        amount: restockForm.value.amount,
-        unit: restockForm.value.unit,
-        remark: restockForm.value.remark,
-        note: 'เติมสินค้า (Restock)',
-        created_by: auth.user.id,
-        updated_by: auth.user.id
-      })
-    
-    if (importError) throw importError
+    const restockPayloadBase = {
+      item_id: restockForm.value.item_id,
+      amount: restockForm.value.amount,
+      unit: restockForm.value.unit,
+      remark: restockForm.value.remark,
+      note: 'เติมสินค้า (Restock)',
+      created_by: auth.user.id,
+      updated_by: auth.user.id
+    }
+
+    if (uploadedDocumentUrl) {
+      const { error } = await supabase.from('inventory_imports').insert({ ...restockPayloadBase, document_url: uploadedDocumentUrl })
+      if (error && String(error.message || '').includes('document_url')) {
+        warnings.push('ตาราง inventory_imports ไม่มีคอลัมน์ document_url จึงบันทึกลิงก์ไว้ที่หมายเหตุไม่ได้')
+        const { error: retryErr } = await supabase.from('inventory_imports').insert(restockPayloadBase)
+        if (retryErr) throw retryErr
+      } else if (error) {
+        throw error
+      }
+    } else {
+      const { error } = await supabase.from('inventory_imports').insert(restockPayloadBase)
+      if (error) throw error
+    }
 
     // Log the action
     await supabase.from('user_logs').insert({
@@ -256,7 +342,8 @@ async function handleRestock() {
     // Success
     isRestockModalOpen.value = false
     await fetchData()
-    alert('เติมสินค้าสำเร็จ')
+    if (warnings.length) alert('เติมสินค้าสำเร็จ\n\n' + warnings.join('\n'))
+    else alert('เติมสินค้าสำเร็จ')
   } catch (err) {
     console.error(err)
     alert('Error restocking item: ' + err.message)
@@ -452,6 +539,16 @@ async function saveCategory() {
               <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">หมายเหตุ</label>
               <textarea v-model="itemForm.remark" rows="3" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)"></textarea>
             </div>
+            <div class="space-y-1">
+              <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">แนบไฟล์ (เอกสาร/รูป)</label>
+              <input
+                type="file"
+                @change="onItemDocumentSelected"
+                class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
+                style="border-color: var(--color-border); background: var(--color-bg-body); color: var(--color-text-primary)"
+              />
+              <p class="text-[11px]" style="color: var(--color-text-muted)">อัปโหลดไปที่ Storage bucket `document_url`</p>
+            </div>
           </div>
           <div class="p-6 border-t" style="border-color: var(--color-border)">
             <button 
@@ -576,6 +673,15 @@ async function saveCategory() {
           <div class="space-y-1">
             <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">หมายเหตุ</label>
             <textarea v-model="restockForm.remark" rows="2" placeholder="ระบุรายละเอียดการเติมสินค้า (ถ้ามี)" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)"></textarea>
+          </div>
+          <div class="space-y-1">
+            <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">แนบไฟล์ (เอกสาร/รูป)</label>
+            <input
+              type="file"
+              @change="onRestockDocumentSelected"
+              class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
+              style="border-color: var(--color-border); background: var(--color-bg-body); color: var(--color-text-primary)"
+            />
           </div>
         </div>
         <div class="p-6 border-t flex gap-3" style="border-color: var(--color-border)">

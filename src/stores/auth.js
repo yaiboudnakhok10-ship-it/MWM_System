@@ -4,6 +4,20 @@ import { supabase } from '@/lib/supabase'
 import router from '@/router'
 import bcrypt from 'bcryptjs'
 
+async function getPublicIp() {
+  try {
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), 2000)
+    const res = await fetch('https://api.ipify.org?format=json', { signal: controller.signal })
+    clearTimeout(t)
+    if (!res.ok) return null
+    const json = await res.json()
+    return json?.ip || null
+  } catch {
+    return null
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(JSON.parse(localStorage.getItem('mwm_session')) || null)
   const isLoggedIn = computed(() => !!user.value)
@@ -34,10 +48,12 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.setItem('mwm_session', JSON.stringify(safeUser))
 
       // 4. Log the action in user_logs
+      const ip = await getPublicIp()
       await supabase.from('user_logs').insert({
         system_user_id: userData.id,
         action: 'login',
         user_agent: navigator.userAgent,
+        ip_address: ip,
         old_value: { login_at: new Date().toISOString() }
       })
 

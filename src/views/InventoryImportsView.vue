@@ -21,6 +21,7 @@ async function fetchImports() {
         item:items(item_code, item_name),
         creator:system_users!created_by(fullname)
       `)
+      .eq('note', 'เติมสินค้า (Restock)')
       .order('created_at', { ascending: false })
     
     if (error) throw error
@@ -72,13 +73,13 @@ function exportToExcel() {
     'จำนวน': imp.amount,
     'หน่วย': imp.unit,
     'ผู้ดำเนินการ': imp.creator?.fullname || '-',
-    'ประเภทรายการ': imp.note || '-',
+    'ประเภทรายการ': 'เติมสินค้า (Restock)',
     'หมายเหตุ': imp.remark || '-'
   }))
 
   const worksheet = XLSX.utils.json_to_sheet(dataToExport)
   const workbook = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Imports History")
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Restock History')
   
   // Set column widths
   const wscols = [
@@ -106,8 +107,8 @@ function formatDate(iso) {
     <!-- Header Section -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
       <div>
-        <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">ประวัติการนำเข้าสินค้า</h1>
-        <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">ตรวจสอบรายการนำเข้าและเติมสต็อกย้อนหลัง</p>
+        <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">ประวัติการเพิ่มสินค้า</h1>
+        <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">แสดงเฉพาะรายการ <strong>เติมสินค้า (Restock)</strong> — ไม่รวมการนำเข้าครั้งแรก</p>
       </div>
       <div>
         <button @click="exportToExcel" 
@@ -125,7 +126,7 @@ function formatDate(iso) {
         <input 
           v-model="searchText"
           type="text" 
-          placeholder="ค้นหาด้วยรหัสสินค้า, ชื่อสินค้า หรือประเภทรายการ..." 
+          placeholder="ค้นหาด้วยรหัสสินค้า, ชื่อสินค้า หรือหมายเหตุ..." 
           class="w-full pl-9 pr-4 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         />
@@ -156,20 +157,21 @@ function formatDate(iso) {
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">หน่วย</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ผู้ดำเนินการ</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ประเภทรายการ</th>
+              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ไฟล์แนบ</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">หมายเหตุ</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="7" class="px-4 py-12 text-center">
+              <td colspan="8" class="px-4 py-12 text-center">
                 <i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-blue-500"></i>
                 <p style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</p>
               </td>
             </tr>
             <tr v-else-if="filteredImports.length === 0">
-              <td colspan="7" class="px-4 py-12 text-center" style="color: var(--color-text-muted)">
+              <td colspan="8" class="px-4 py-12 text-center" style="color: var(--color-text-muted)">
                 <i class="fa-solid fa-folder-open text-2xl mb-2 opacity-20"></i>
-                <p>ไม่พบประวัติการนำเข้า</p>
+                <p>ไม่พบประวัติการเติมสินค้า (Restock)</p>
               </td>
             </tr>
             <tr v-for="imp in filteredImports" :key="imp.id"
@@ -195,10 +197,15 @@ function formatDate(iso) {
                 </div>
               </td>
               <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded text-[11px] font-medium"
-                      :class="imp.note?.includes('Restock') ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'">
-                  {{ imp.note || 'นำเข้าปกติ' }}
+                <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                  เติมสินค้า (Restock)
                 </span>
+              </td>
+              <td class="px-4 py-3">
+                <div v-if="imp.document_url" class="flex items-center gap-2">
+                  <a :href="imp.document_url" target="_blank" class="text-blue-600 hover:underline">เปิดไฟล์</a>
+                </div>
+                <span v-else style="color: var(--color-text-muted)">-</span>
               </td>
               <td class="px-4 py-3 italic" style="color: var(--color-text-muted)">
                 {{ imp.remark || '-' }}

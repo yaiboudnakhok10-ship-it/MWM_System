@@ -18,15 +18,16 @@ const menuGroups = [
     label: 'คลังสินค้า',
     items: [
       { label: 'รายการสินค้า', icon: 'fa-boxes-stacked', path: '/item-list' },
-      { label: 'ประวัติการนำเข้า', icon: 'fa-tags', path: '/inventory-imports' },
-      { label: 'นำเข้าสินค้า', icon: 'fa-arrow-down-to-bracket', path: '/imports' },
+      { label: 'ประวัติการเพี่มสินค้า', icon: 'fa-clock-rotate-left', path: '/inventory-imports' },
+      { label: 'นำเข้าสินค้า', icon: 'fa-file-import', path: '/imports' },
+      { label: 'ประวัติการนำเข้าสินค้า', icon: 'fa-clock-rotate-left', path: '/inventory-history' },
     ]
   },
   {
     label: 'การเบิกจ่าย',
     items: [
       { label: 'เบิกสินค้า', icon: 'fa-arrow-up-from-bracket', path: '/withdraw' },
-      { label: 'คำขอเบิก', icon: 'fa-clipboard-list', path: '/order-req' },
+      { label: 'คำขอเบิก', icon: 'fa-clipboard-list', path: '/order-list' },
       { label: 'ประวัติการเบิก', icon: 'fa-clock-rotate-left', path: '/history' },
     ]
   },
