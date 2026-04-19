@@ -130,7 +130,7 @@ const filteredOrders = computed(() => {
                 <span v-else>{{ order.amount }} / {{ order.unit }}</span>
               </td>
               <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded-full text-[11px] border bg-blue-50 text-blue-600 border-blue-100 font-medium">
+                <span class="px-2 py-0.5 rounded-full text-[11px] border bg-blue-50 text-blue-600 border-blue-100 dark:bg-blue-700/30 dark:border-blue-700/30 dark:text-blue-500 font-medium">
                   เบิกแล้ว
                 </span>
               </td>

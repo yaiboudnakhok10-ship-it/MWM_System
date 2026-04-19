@@ -1,10 +1,13 @@
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
+import { useUiStore } from '@/stores/ui'
 
 const auth = useAuthStore()
+const ui = useUiStore()
 
 const DOCUMENT_BUCKET = 'document_url'
 
@@ -14,6 +17,11 @@ const categories = ref([])
 const loading = ref(true)
 const searchText = ref('')
 const selectedCategoryId = ref('all')
+
+// Barcode Download Mode
+const isBarcodeMode = ref(false)
+const selectedItemIds = ref(new Set())
+const isDownloading = ref(false)
 
 // Sidebar & Modal Visibility
 const isSidebarOpen = ref(false)
@@ -86,6 +94,7 @@ async function fetchData() {
 
 onMounted(() => {
   fetchData()
+  window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
 function makeStoragePath(file, type) {
@@ -123,7 +132,203 @@ const filteredItems = computed(() => {
   })
 })
 
-// Sidebar Handlers (Add/Import Item)
+const selectedCount = computed(() => selectedItemIds.value.size)
+
+// ─── Barcode Mode ─────────────────────────────────────────────────────────────
+
+function enterBarcodeMode() {
+  isBarcodeMode.value = true
+  selectedItemIds.value = new Set()
+}
+
+function exitBarcodeMode() {
+  isBarcodeMode.value = false
+  selectedItemIds.value = new Set()
+}
+
+function toggleItemSelection(itemId) {
+  const next = new Set(selectedItemIds.value)
+  if (next.has(itemId)) {
+    next.delete(itemId)
+  } else {
+    next.add(itemId)
+  }
+  selectedItemIds.value = next
+}
+
+function isSelected(itemId) {
+  return selectedItemIds.value.has(itemId)
+}
+
+// ─── Barcode Generation ───────────────────────────────────────────────────────
+
+/**
+ * Renders a CODE128 barcode onto an off-screen canvas and returns the canvas.
+ * Uses a lightweight built-in encoder — no external library needed.
+ */
+function generateBarcodeCanvas(code, label) {
+  // CODE128B encoding table
+  const CODE128B_START = 104
+  const CODE128_STOP  = 106
+  const CODE128B_CHARS = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
+
+  const PATTERNS = [
+    '11011001100','11001101100','11001100110','10010011000','10010001100',
+    '10001001100','10011001000','10011000100','10001100100','11001001000',
+    '11001000100','11000100100','10110011100','10011011100','10011001110',
+    '10111001100','10011101100','10011100110','11001110010','11001011100',
+    '11001001110','11011100100','11001110100','11101101110','11101001100',
+    '11100101100','11100100110','11101100100','11100110100','11100110010',
+    '11011011000','11011000110','11000110110','10100011000','10001011000',
+    '10001000110','10110001000','10001101000','10001100010','11010001000',
+    '11000101000','11000100010','10110111000','10110001110','10001101110',
+    '10111011000','10111000110','10001110110','11101110110','11010001110',
+    '11000101110','11011101000','11011100010','11011101110','11101011000',
+    '11101000110','11100010110','11101101000','11101100010','11100011010',
+    '11101111010','11001000010','11110001010','10100110000','10100001100',
+    '10010110000','10010000110','10000101100','10000100110','10110010000',
+    '10110000100','10011010000','10011000010','10000110100','10000110010',
+    '11000010010','11001010000','11110111010','11000010100','10001111010',
+    '10100111100','10010111100','10010011110','10111100100','10011110100',
+    '10011110010','11110100100','11110010100','11110010010','11011011110',
+    '11011110110','11110110110','10101111000','10100011110','10001011110',
+    '10111101000','10111100010','11110101000','11110100010','10111011110',
+    '10111101110','11101011110','11110101110','11010000100','11010010000',
+    '11010011100','11000111010','11010111000'
+  ]
+
+  // Encode string to CODE128B symbol indices
+  const indices = []
+  indices.push(CODE128B_START)
+  let checksum = CODE128B_START
+  for (let i = 0; i < code.length; i++) {
+    const idx = CODE128B_CHARS.indexOf(code[i])
+    if (idx === -1) continue // skip unsupported chars
+    indices.push(idx)
+    checksum += (i + 1) * idx
+  }
+  checksum = checksum % 103
+  indices.push(checksum)
+  indices.push(CODE128_STOP)
+
+  // Build bar pattern string
+  let bars = ''
+  for (const idx of indices) {
+    bars += PATTERNS[idx] || ''
+  }
+  bars += '11' // termination bar
+
+  // Canvas dimensions
+  const barWidth   = 2
+  const barHeight  = 80
+  const paddingX   = 20
+  const paddingTop = 16
+  const labelH     = 24
+  const totalW     = bars.length * barWidth + paddingX * 2
+  const totalH     = paddingTop + barHeight + labelH + 8
+
+  const canvas  = document.createElement('canvas')
+  canvas.width  = totalW
+  canvas.height = totalH
+  const ctx     = canvas.getContext('2d')
+
+  // Background
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, totalW, totalH)
+
+  // Bars
+  for (let i = 0; i < bars.length; i++) {
+    ctx.fillStyle = bars[i] === '1' ? '#000000' : '#ffffff'
+    ctx.fillRect(paddingX + i * barWidth, paddingTop, barWidth, barHeight)
+  }
+
+  // Label text
+  ctx.fillStyle = '#000000'
+  ctx.font      = 'bold 13px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillText(label, totalW / 2, paddingTop + barHeight + labelH - 4)
+
+  return canvas
+}
+
+async function downloadBarcodes() {
+  if (selectedCount.value === 0) return
+  isDownloading.value = true
+
+  try {
+    const selected = filteredItems.value.filter(item => selectedItemIds.value.has(item.id))
+
+    if (selected.length === 1) {
+      // Single: download image directly
+      const item   = selected[0]
+      const canvas = generateBarcodeCanvas(item.item_code, item.item_code)
+      const link   = document.createElement('a')
+      link.download = `barcode-${item.item_code}.png`
+      link.href     = canvas.toDataURL('image/png')
+      link.click()
+    } else {
+      // Multiple: bundle into ZIP using JSZip (loaded from CDN)
+      const JSZip = (await loadJSZip()).default || (await loadJSZip())
+      const zip   = new JSZip()
+
+      for (const item of selected) {
+        const canvas  = generateBarcodeCanvas(item.item_code, item.item_code)
+        const dataUrl = canvas.toDataURL('image/png')
+        const base64  = dataUrl.replace(/^data:image\/png;base64,/, '')
+        zip.file(`barcode-${item.item_code}.png`, base64, { base64: true })
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const link = document.createElement('a')
+      link.download = 'barcodes.zip'
+      link.href     = URL.createObjectURL(blob)
+      link.click()
+      URL.revokeObjectURL(link.href)
+    }
+  } catch (err) {
+    console.error('Download error:', err)
+    alert('เกิดข้อผิดพลาดในการดาวน์โหลด: ' + err.message)
+  } finally {
+    isDownloading.value = false
+  }
+}
+
+function loadJSZip() {
+  return new Promise((resolve, reject) => {
+    if (window.JSZip) { resolve(window.JSZip); return }
+    const s  = document.createElement('script')
+    s.src    = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
+    s.onload = () => resolve(window.JSZip)
+    s.onerror = reject
+    document.head.appendChild(s)
+  })
+}
+
+// ─── Navigation / Unload Guards ──────────────────────────────────────────────
+
+const LEAVE_MSG = 'คุณกำลังอยู่ในโหมดเลือกบาร์โค้ด\nต้องการออกจากหน้านี้หรือไม่?'
+
+function handleBeforeUnload(e) {
+  if (!isBarcodeMode.value) return
+  e.preventDefault()
+  e.returnValue = LEAVE_MSG // required for Chrome to show the dialog
+  return LEAVE_MSG
+}
+
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+})
+
+// Vue Router guard — fires when navigating to another route
+onBeforeRouteLeave((to, from, next) => {
+  if (!isBarcodeMode.value) { next(); return }
+  const confirmed = window.confirm(LEAVE_MSG)
+  confirmed ? next() : next(false)
+})
+
+// ─── Sidebar Handlers (Add/Import Item) ───────────────────────────────────────
+
 function openAddItemSidebar() {
   itemForm.value = {
     item_code: '',
@@ -156,7 +361,6 @@ async function saveItem() {
       }
     }
 
-    // 1. Check if item exists
     let { data: existingItem, error: findError } = await supabase
       .from('items')
       .select('id, document_url')
@@ -169,7 +373,6 @@ async function saveItem() {
 
     if (existingItem) {
       itemId = existingItem.id
-      // Update existing item stock (though trigger handles it, we might want to log who updated it)
       const { error: updateItemError } = await supabase
         .from('items')
         .update({
@@ -179,7 +382,6 @@ async function saveItem() {
         .eq('id', itemId)
       if (updateItemError) throw updateItemError
     } else {
-      // 2. Insert into items
       const { data: newItem, error: insertItemError } = await supabase
         .from('items')
         .insert({
@@ -189,7 +391,7 @@ async function saveItem() {
           unit: itemForm.value.unit,
           remark: itemForm.value.remark,
           document_url: uploadedDocumentUrl || null,
-          current_stock: 0, // Will be updated by trigger
+          current_stock: 0,
           created_by: auth.user.id,
           updated_by: auth.user.id
         })
@@ -200,7 +402,6 @@ async function saveItem() {
       itemId = newItem.id
     }
 
-    // 3. Insert into inventory_imports
     const importPayloadBase = {
       item_id: itemId,
       amount: itemForm.value.amount,
@@ -211,13 +412,11 @@ async function saveItem() {
       updated_by: auth.user.id
     }
 
-    // ถ้าตาราง inventory_imports มีคอลัมน์ document_url ให้บันทึกลงด้วย
     let importError = null
     if (uploadedDocumentUrl) {
       const { error } = await supabase.from('inventory_imports').insert({ ...importPayloadBase, document_url: uploadedDocumentUrl })
       importError = error
       if (importError && String(importError.message || '').includes('document_url')) {
-        // fallback: ถ้าไม่มีคอลัมน์ ให้บันทึกเฉพาะ remark (ไม่ล้มทั้งรายการ)
         warnings.push('ตาราง inventory_imports ไม่มีคอลัมน์ document_url จึงบันทึกลิงก์ไว้ที่รายการสินค้าแทน')
         importError = null
         const { error: retryErr } = await supabase.from('inventory_imports').insert(importPayloadBase)
@@ -230,7 +429,6 @@ async function saveItem() {
       if (error) throw error
     }
 
-    // 4. Log the action
     await supabase.from('user_logs').insert({
       system_user_id: auth.user.id,
       action: 'import_item',
@@ -241,7 +439,6 @@ async function saveItem() {
       }
     })
 
-    // Success
     isSidebarOpen.value = false
     await fetchData()
     if (warnings.length) alert('บันทึกข้อมูลสำเร็จ\n\n' + warnings.join('\n'))
@@ -286,7 +483,12 @@ function openRestockModal(item) {
 
 async function handleRestock() {
   if (restockForm.value.amount <= 0) {
-    alert('กรุณากรอกจำนวนที่ต้องการเติมให้ถูกต้อง')
+    ui.showToast('กรุณากรอกจำนวนที่ต้องการเติมให้ถูกต้อง', 'warning')
+    return
+  }
+
+  if (!restockDocumentFile.value) {
+    ui.showToast('กรุณาแนบไฟล์รูปภาพหรือเอกสารเพื่อยืนยันการเติมสินค้า', 'error')
     return
   }
 
@@ -303,7 +505,6 @@ async function handleRestock() {
       }
     }
 
-    // Insert into inventory_imports (Trigger handles current_stock in items)
     const restockPayloadBase = {
       item_id: restockForm.value.item_id,
       amount: restockForm.value.amount,
@@ -328,7 +529,6 @@ async function handleRestock() {
       if (error) throw error
     }
 
-    // Log the action
     await supabase.from('user_logs').insert({
       system_user_id: auth.user.id,
       action: 'restock_item',
@@ -339,14 +539,13 @@ async function handleRestock() {
       }
     })
 
-    // Success
     isRestockModalOpen.value = false
     await fetchData()
-    if (warnings.length) alert('เติมสินค้าสำเร็จ\n\n' + warnings.join('\n'))
-    else alert('เติมสินค้าสำเร็จ')
+    if (warnings.length) ui.showToast('เติมสินค้าสำเร็จ (มีคำเตือน)', 'warning')
+    else ui.showToast('เติมสินค้าสำเร็จเรียบร้อยแล้ว', 'success')
   } catch (err) {
     console.error(err)
-    alert('Error restocking item: ' + err.message)
+    ui.showToast('เกิดข้อผิดพลาด: ' + err.message, 'error')
   } finally {
     saving.value = false
   }
@@ -384,7 +583,6 @@ async function saveCategory() {
       if (error) throw error
     }
 
-    // Log the action
     await supabase.from('user_logs').insert({
       system_user_id: auth.user.id,
       action: isEditingCategory.value ? 'edit_category' : 'add_category',
@@ -412,15 +610,49 @@ async function saveCategory() {
         <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">รายการสินค้า</h1>
         <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">จัดการข้อมูลสินค้าและสต็อกในระบบ</p>
       </div>
-      <div class="flex flex-wrap gap-2">
-        <button @click="openCategoryModal" class="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[13px] font-medium transition-all hover:bg-gray-50 active:scale-95" style="background: var(--color-bg-card); border-color: var(--color-border); color: var(--color-text-primary)">
-          <i class="fa-solid fa-tags"></i>
-          จัดการประเภทสินค้า
-        </button>
-        <button @click="openAddItemSidebar" class="flex items-center gap-2 px-4 py-1.5 rounded-lg border text-[13px] font-medium transition-all hover:bg-gray-100 active:scale-95" style="background: var(--color-card); color: var(--color-text-primary); border-color: var(--color-border)">
-          <i class="fa-solid fa-plus"></i>
-          เพิ่มสินค้า / นำเข้า
-        </button>
+      <div class="flex flex-wrap gap-3">
+        <!-- Barcode mode: show exit banner instead of normal buttons -->
+        <template v-if="isBarcodeMode">
+          <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-blue-400 dark:border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-[13px] font-medium">
+            <i class="fa-solid fa-barcode"></i>
+            <span>โหมดเลือกบาร์โค้ด</span>
+            <span class="mx-1 text-blue-400 dark:text-blue-600">|</span>
+            <span>เลือกแล้ว <strong>{{ selectedCount }}</strong> รายการ</span>
+          </div>
+          <button
+            @click="exitBarcodeMode"
+            class="flex items-center gap-2 py-1.5 px-3 rounded-lg border text-[13px] font-medium transition-all hover:bg-red-50 dark:hover:bg-red-900/30 active:scale-95 text-red-600 dark:text-red-400 border-red-300 dark:border-red-700"
+          >
+            <i class="fa-solid fa-xmark"></i>
+            ออกจากโหมดนี้
+          </button>
+        </template>
+
+        <template v-else>
+          <button
+            @click="enterBarcodeMode"
+            class="flex items-center gap-3 py-1.5 px-3 rounded-lg border text-[13px] font-medium transition-all hover:bg-gray-200 dark:hover:bg-gray-700 active:scale-95 text-slate-600 dark:text-slate-300 border-slate-500 dark:border-slate-700"
+          >
+            <i class="fa-solid fa-download"></i>
+            ดาวน์โหลดบาร์โค้ด
+          </button>
+          <button
+            @click="openCategoryModal"
+            class="flex items-center gap-3 px-3 py-1.5 rounded-lg border text-[13px] font-medium transition-all hover:bg-gray-50 active:scale-95"
+            style="background: var(--color-bg-card); border-color: var(--color-border); color: var(--color-text-primary)"
+          >
+            <i class="fa-solid fa-tags"></i>
+            จัดการประเภทสินค้า
+          </button>
+          <button
+            @click="openAddItemSidebar"
+            class="flex items-center gap-3 px-4 py-1.5 rounded-lg border text-[13px] font-medium transition-all hover:bg-gray-100 active:scale-95"
+            style="background: var(--color-card); color: var(--color-text-primary); border-color: var(--color-border)"
+          >
+            <i class="fa-solid fa-plus"></i>
+            เพิ่มสินค้า / นำเข้า
+          </button>
+        </template>
       </div>
     </div>
 
@@ -454,20 +686,57 @@ async function saveCategory() {
         <table class="w-full text-[13px]">
           <thead>
             <tr style="border-bottom: 1px solid var(--color-border)">
+              <!-- Checkbox column header: X button in barcode mode -->
+              <th class="px-4 py-3 w-10 text-center">
+                <template v-if="isBarcodeMode">
+                  <button
+                    @click="exitBarcodeMode"
+                    class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800/50 transition-colors"
+                    title="ออกจากโหมดเลือก"
+                  >
+                    <i class="fa-solid fa-xmark text-[11px]"></i>
+                  </button>
+                </template>
+              </th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">รหัสสินค้า</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ชื่อสินค้า</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ประเภท</th>
               <th class="text-right px-4 py-3 font-medium" style="color: var(--color-text-muted)">จำนวนคงเหลือ</th>
-              <!-- <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">หน่วย</th> -->
               <th class="text-center px-4 py-3 font-medium" style="color: var(--color-text-muted)">ผู้เพิ่ม</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">หมายเหตุ</th>
-              <th class="text-center px-4 py-3 font-medium" style="color: var(--color-text-muted)">เติมสินค้า</th>
+              <!-- Hide restock column header in barcode mode -->
+              <th v-if="!isBarcodeMode" class="text-center px-4 py-3 font-medium" style="color: var(--color-text-muted)">เติมสินค้า</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in filteredItems" :key="item.id"
-                class="border-b last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-700/30 transition-colors"
-                style="border-color: var(--color-border)">
+            <tr
+              v-for="item in filteredItems"
+              :key="item.id"
+              class="border-b last:border-b-0 transition-colors"
+              :class="[
+                isBarcodeMode
+                  ? isSelected(item.id)
+                    ? 'bg-blue-50 dark:bg-blue-900/20 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-300/30'
+                    : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-blue-400/10'
+                  : 'hover:bg-gray-50 dark:hover:bg-slate-700/30'
+              ]"
+              style="border-color: var(--color-border)"
+              @click="isBarcodeMode ? toggleItemSelection(item.id) : null"
+            >
+              <!-- Checkbox cell -->
+              <td class="px-4 py-3 text-center" @click.stop="isBarcodeMode ? toggleItemSelection(item.id) : null">
+                <template v-if="isBarcodeMode">
+                  <div
+                    class="inline-flex items-center justify-center w-5 h-5 rounded border-2 transition-all"
+                    :class="isSelected(item.id)
+                      ? 'bg-blue-500 border-blue-500 dark:bg-blue-400 dark:border-blue-400'
+                      : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800'"
+                  >
+                    <i v-if="isSelected(item.id)" class="fa-solid fa-check text-white text-[9px]"></i>
+                  </div>
+                </template>
+              </td>
+
               <td class="px-4 py-3 font-mono" style="color: var(--color-text-muted)">{{ item.item_code }}</td>
               <td class="px-4 py-3 font-medium" style="color: var(--color-text-primary)">{{ item.item_name }}</td>
               <td class="px-4 py-3" style="color: var(--color-text-secondary)">
@@ -476,28 +745,66 @@ async function saveCategory() {
                 </span>
               </td>
               <td class="px-4 py-3 font-bold text-right">
-                <span class="rounded-md px-1 py-0.5 text-center item-center" :class="item.current_stock <= 5 ? 'bg-red-100 dark:bg-red-600/30 text-red-600 dark:text-red-500' : 'bg-green-100 dark:bg-green-600/30 text-emerald-600 dark:text-green-500'">{{ item.current_stock }} {{ item.unit }}</span>
+                <span
+                  class="rounded-lg px-1 py-0.5 text-center"
+                  :class="item.current_stock <= 5
+                    ? 'bg-red-100 dark:bg-red-600/30 text-red-600 dark:text-red-500'
+                    : 'bg-green-100 dark:bg-green-600/30 text-emerald-600 dark:text-green-500'"
+                >{{ item.current_stock }} {{ item.unit }}</span>
               </td>
-              <!-- <td class="px-4 py-3" style="color: var(--color-text-muted)">{{ item.unit }}</td> -->
               <td class="px-4 py-3 text-center" style="color: var(--color-text-secondary)">{{ item.creator?.fullname || '-' }}</td>
               <td class="px-4 py-3" style="color: var(--color-text-muted)">{{ item.remark || '-' }}</td>
-              <td class="px-4 py-3 text-center">
-                <button @click="openRestockModal(item)" class="px-3 py-1 rounded bg-emerald-50 dark:bg-emerald-600/20 text-emerald-600 dark:text-emerald-500 border border-emerald-200 dark:border-emerald-600/20 text-[11px] font-medium hover:bg-emerald-100 transition-colors">
+
+              <!-- Restock button: hidden in barcode mode -->
+              <td v-if="!isBarcodeMode" class="px-4 py-3 text-center" @click.stop>
+                <button
+                  @click="openRestockModal(item)"
+                  class="px-3 py-1 rounded bg-emerald-50 hover:scale-105 hover:bg-emerald-100 dark:hover:bg-emerald-400/30 dark:bg-emerald-600/20 text-emerald-600 dark:text-emerald-500 border border-emerald-200 dark:border-emerald-600/20 text-[11px] font-medium hover:bg-emerald-100 transition-colors"
+                >
                   <i class="fa-solid fa-plus-circle mr-1"></i>
                   Restock
                 </button>
               </td>
             </tr>
             <tr v-if="loading">
-              <td colspan="7" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
+              <td colspan="8" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
             </tr>
             <tr v-else-if="filteredItems.length === 0">
-              <td colspan="7" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบข้อมูลสินค้า</td>
+              <td colspan="8" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบข้อมูลสินค้า</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
+
+    <!-- ─── Floating Download Bar (Barcode Mode) ─────────────────────────── -->
+    <Transition name="float-up">
+      <div
+        v-if="isBarcodeMode && selectedCount > 0"
+        class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 rounded-2xl shadow-2xl border border-blue-300 dark:border-blue-600 bg-white dark:bg-slate-800"
+      >
+        <div class="flex items-center gap-2 text-[13px] font-medium text-blue-700 dark:text-blue-300">
+          <i class="fa-solid fa-barcode text-blue-500"></i>
+          <span>เลือกแล้ว <strong>{{ selectedCount }}</strong> รายการ</span>
+        </div>
+        <div class="w-px h-5 bg-gray-200 dark:bg-slate-600"></div>
+        <button
+          @click="downloadBarcodes"
+          :disabled="isDownloading"
+          class="flex items-center gap-2 px-4 py-1.5 rounded-xl text-[13px] font-semibold text-white transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed bg-blue-500 hover:bg-blue-600 dark:bg-blue-500 dark:hover:bg-blue-400"
+        >
+          <i :class="isDownloading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-download'"></i>
+          {{ isDownloading ? 'กำลังสร้าง...' : (selectedCount === 1 ? 'ดาวน์โหลดรูปภาพ' : 'ดาวน์โหลด ZIP') }}
+        </button>
+        <button
+          @click="selectedItemIds = new Set()"
+          class="flex items-center gap-1 px-3 py-1.5 rounded-xl text-[12px] font-medium transition-all hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-500 dark:text-gray-400"
+        >
+          <i class="fa-solid fa-rotate-left text-[11px]"></i>
+          ล้าง
+        </button>
+      </div>
+    </Transition>
 
     <!-- Sidebar: Add Item / Import -->
     <Transition name="slide-right">
@@ -532,7 +839,7 @@ async function saveCategory() {
               </div>
             </div>
             <div class="space-y-1">
-              <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">จำนวนนำเข้า</label>
+              <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">จำนวนที่จะนำเข้า</label>
               <input v-model.number="itemForm.amount" type="number" min="1" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)" />
             </div>
             <div class="space-y-1">
@@ -554,8 +861,7 @@ async function saveCategory() {
             <button 
               @click="saveItem" 
               :disabled="saving"
-              class="w-full py-2.5 rounded-lg text-[14px] font-medium text-white transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed" 
-              style="background: var(--color-primary)"
+              class="w-full py-2.5 rounded-lg bg-slate-200 active:scale-95 transition-all duration-300 dark:bg-slate-500/40 text-[14px] font-medium text-slate-800 dark:text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {{ saving ? 'กำลังบันทึก...' : 'บันทึกข้อมูล' }}
             </button>
@@ -625,26 +931,6 @@ async function saveCategory() {
         </div>
       </div>
     </div>
-                  <!-- <th class="text-left px-4 py-2 font-medium" style="color: var(--color-text-muted)">หมายเหตุ</th>
-                  <th class="text-right px-4 py-2 font-medium" style="color: var(--color-text-muted)">จัดการ</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="cat in categories" :key="cat.id" class="border-b last:border-b-0" style="border-color: var(--color-border)">
-                  <td class="px-4 py-2" style="color: var(--color-text-primary)">{{ cat.category_name }}</td>
-                  <td class="px-4 py-2" style="color: var(--color-text-muted)">{{ cat.remark || '-' }}</td>
-                  <td class="px-4 py-2 text-right">
-                    <button @click="editCategory(cat)" class="p-1.5 text-blue-600 hover:bg-blue-50 rounded transition-colors">
-                      <i class="fa-solid fa-pen-to-square"></i>
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div> -->
 
     <!-- Modal: Restock Item -->
     <div v-if="isRestockModalOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -652,20 +938,20 @@ async function saveCategory() {
       <div class="relative w-full max-w-md shadow-2xl rounded-2xl flex flex-col overflow-hidden" style="background: var(--color-bg-card)">
         <div class="px-6 py-4 border-b flex items-center justify-between" style="border-color: var(--color-border)">
           <h2 class="text-[16px] font-semibold" style="color: var(--color-text-primary)">เติมสินค้า (Restock)</h2>
-          <button @click="isRestockModalOpen = false" class="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+          <button @click="isRestockModalOpen = false" class="p-2 hover:bg-gray-100 dark:hover:bg-slate-600/40 rounded-lg transition-colors">
             <i class="fa-solid fa-xmark" style="color: var(--color-text-muted)"></i>
           </button>
         </div>
         <div class="p-6 space-y-4">
-          <div class="p-3 rounded-lg bg-amber-50 border border-amber-100 mb-2">
-            <p class="text-[12px] text-amber-700 font-medium">กำลังเติมสินค้า:</p>
-            <p class="text-[15px] text-amber-900 font-bold">{{ restockForm.item_name }}</p>
+          <div class="p-3 rounded-lg bg-amber-100 dark:bg-amber-400/20 mb-2">
+            <p class="text-[12px] text-amber-700 dark:text-amber-300 font-medium">กำลังเติมสินค้า:</p>
+            <p class="text-[15px] text-amber-900 dark:text-amber-200 font-bold">{{ restockForm.item_name }}</p>
           </div>
           <div class="space-y-1">
             <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">จำนวนที่ต้องการเติม</label>
             <div class="flex gap-2">
               <input v-model.number="restockForm.amount" type="number" min="1" class="flex-1 px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)" />
-              <div class="px-4 py-2 border rounded-lg text-[13px] bg-gray-50 flex items-center justify-center min-w-[60px]" style="border-color: var(--color-border)">
+              <div class="px-4 py-2 border rounded-lg text-[13px] bg-gray-50 dark:bg-slate-800/50 flex items-center justify-center min-w-[60px]" style="border-color: var(--color-border)">
                 {{ restockForm.unit }}
               </div>
             </div>
@@ -675,24 +961,28 @@ async function saveCategory() {
             <textarea v-model="restockForm.remark" rows="2" placeholder="ระบุรายละเอียดการเติมสินค้า (ถ้ามี)" class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1" style="border-color: var(--color-border); background: var(--color-bg-body)"></textarea>
           </div>
           <div class="space-y-1">
-            <label class="text-[13px] font-medium" style="color: var(--color-text-primary)">แนบไฟล์ (เอกสาร/รูป)</label>
+            <label class="text-[13px] font-medium flex items-center gap-1" style="color: var(--color-text-primary)">
+              แนบไฟล์ (เอกสาร/รูป)
+              <span class="text-red-500 font-bold">*</span>
+            </label>
             <input
               type="file"
               @change="onRestockDocumentSelected"
               class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
-              style="border-color: var(--color-border); background: var(--color-bg-body); color: var(--color-text-primary)"
+              :class="!restockDocumentFile ? 'border-red-300 bg-red-50/30' : 'border-gray-200'"
+              style="background: var(--color-bg-body); color: var(--color-text-primary)"
             />
+            <p v-if="!restockDocumentFile" class="text-[11px] text-red-500">กรุณาแนบไฟล์เพื่อยืนยันการเติมสินค้า</p>
           </div>
         </div>
-        <div class="p-6 border-t flex gap-3" style="border-color: var(--color-border)">
-          <button @click="isRestockModalOpen = false" class="flex-1 py-2 rounded-lg text-[14px] font-medium border hover:bg-gray-50 transition-all" style="border-color: var(--color-border); color: var(--color-text-secondary)">
+        <div class="p-6 border-t flex gap-2" style="border-color: var(--color-border)">
+          <button @click="isRestockModalOpen = false" class="flex-1 py-2 gap-2 rounded-lg text-[14px] font-medium border hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-all" style="border-color: var(--color-border); color: var(--color-text-secondary)">
             ยกเลิก
           </button>
           <button 
             @click="handleRestock" 
             :disabled="saving"
-            class="flex-2 py-2 px-6 rounded-lg text-[14px] font-medium text-white transition-all hover:opacity-90 disabled:opacity-50" 
-            style="background: var(--color-primary)"
+            class="flex-2 gap-2 py-2 px-6 rounded-lg text-[14px] bg-emerald-100 dark:bg-emerald-400/50 font-medium text-slate-700 dark:text-white transition-all hover:bg-emerald-200 dark:hover:opacity-90 disabled:opacity-50"
           >
             {{ saving ? 'กำลังบันทึก...' : 'ยืนยันการเติมสินค้า' }}
           </button>
@@ -714,7 +1004,16 @@ async function saveCategory() {
   opacity: 0;
 }
 
-/* Prevent body scroll when modal/sidebar is open */
+.float-up-enter-active,
+.float-up-leave-active {
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.float-up-enter-from,
+.float-up-leave-to {
+  transform: translateX(-50%) translateY(24px);
+  opacity: 0;
+}
+
 body.no-scroll {
   overflow: hidden;
 }

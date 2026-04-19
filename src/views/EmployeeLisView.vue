@@ -91,7 +91,14 @@ function formatDateTime(value) {
 
 function getStatusClass(status) {
   // ตามที่ขอ: ให้ตัวหนังสือสถานะเป็นสีเขียวเสมอ
-  return status ? 'bg-green-50 text-green-700 border-green-100' : ''
+  // return status ? 'bg-green-50 text-green-700 border-green-100 dark:bg-green-700/30 dark:border-green-700/30 dark:text-green-500' : ''
+  if (status === 'ลาออก') {
+    return 'bg-red-50 text-red-700 border-red-100 dark:bg-red-700/30 dark:border-red-700/30 dark:text-red-500'
+  }
+  if (status === 'พนักงาน') {
+    return 'bg-green-50 text-green-700 border-green-100 dark:bg-green-700/30 dark:border-green-700/30 dark:text-green-500'
+  }
+  return 'bg-am-50 text-am-700 border-am-100 dark:bg-am-700/30 dark:border-am-700/30 dark:text-am-500'
 }
 </script>
 
@@ -123,8 +130,8 @@ function getStatusClass(status) {
           class="w-full px-3 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         >
-          <option value="all">ทุกแผนก</option>
-          <option v-for="dep in departmentOptions" :key="dep" :value="dep">{{ dep }}</option>
+          <option value="all" style="background-color: var(--color-bg-card)">ทุกแผนก</option>
+          <option v-for="dep in departmentOptions" :key="dep" :value="dep" style="background-color: var(--color-bg-card)">{{ dep }}</option>
         </select>
       </div>
     </div>
@@ -138,7 +145,7 @@ function getStatusClass(status) {
           <button
             @click="goPrev"
             :disabled="page <= 1"
-            class="px-3 py-1.5 rounded-lg text-[12px] font-medium border hover:bg-gray-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            class="px-3 py-1.5 rounded-lg text-[12px] dark:bg-gray-800 dark:text-white transition-all dark:hover:bg-gray-700 font-medium border hover:bg-gray-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style="border-color: var(--color-border); color: var(--color-text-secondary)"
           >
             ก่อนหน้า
@@ -147,7 +154,7 @@ function getStatusClass(status) {
           <button
             @click="goNext"
             :disabled="page >= totalPages"
-            class="px-3 py-1.5 rounded-lg text-[12px] font-medium border hover:bg-gray-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            class="px-3 py-1.5 rounded-lg text-[12px] dark:bg-gray-800 dark:text-white transition-all font-medium border bg-white hover:bg-gray-50 dark:hover:bg-gray-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style="border-color: var(--color-border); color: var(--color-text-secondary)"
           >
             ถัดไป

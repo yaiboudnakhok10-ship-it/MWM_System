@@ -153,6 +153,10 @@ function closeEmployeeDropdown() {
   employeeActiveIndex.value = -1
 }
 
+function handleEmployeeBlur() {
+  setTimeout(closeEmployeeDropdown, 120)
+}
+
 function openEmployeeDropdown() {
   if (employeeResults.value.length) isEmployeeDropdownOpen.value = true
 }
@@ -297,6 +301,16 @@ async function submitCreate() {
     saving.value = false
   }
 }
+
+// function statusColor(status) {
+//   return status ? 'bg-green-50 text-green-700 border-green-100 dark:bg-green-700/30 dark:border-green-700/30 dark:text-green-500' : 'bg-red-50 text-red-700 border-red-100 dark:bg-red-700/30 dark:border-red-700/30 dark:text-red-500'
+// }
+
+function statusColor(role){
+  if (role === 'staff') return 'bg-green-50 text-green-700 border-green-100 dark:bg-green-700/30 dark:border-green-700/30 dark:text-green-500'
+  if (role === 'admin') return 'bg-red-50 text-red-700 border-red-100 dark:bg-red-700/30 dark:border-red-700/30 dark:text-red-500'
+  return 'bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-700/30 dark:border-amber-700/30 dark:text-amber-500'
+}
 </script>
 
 <template>
@@ -309,7 +323,7 @@ async function submitCreate() {
       <div class="flex items-center gap-2">
         <button
           @click="openCreate"
-          class="px-3 py-1.5 rounded-md text-[12px] font-medium border bg-white hover:bg-gray-50 transition-all"
+          class="px-3 py-1.5 rounded-md text-[12px] font-medium border bg-white dark:bg-gray-800 dark:text-white hover:bg-gray-50 transition-all"
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         >
           <i class="fa-solid fa-plus mr-2"></i>
@@ -381,7 +395,7 @@ async function submitCreate() {
               <td class="px-4 py-3 whitespace-nowrap" style="color: var(--color-text-secondary)">{{ row.emp_code || '-' }}</td>
               <td class="px-4 py-3 whitespace-nowrap" style="color: var(--color-text-primary)">{{ row.fullname || '-' }}</td>
               <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded-full text-[11px] border bg-green-50 text-green-700 border-green-100">{{ roleLabel(row.role) }}</span>
+                <span class="px-2 py-0.5 rounded-full text-[11px] border" :class="statusColor(row.role)">{{ roleLabel(row.role) }}</span>
               </td>
               <td class="px-4 py-3 text-[12px] whitespace-nowrap" style="color: var(--color-text-muted)">{{ creatorText(row) }}</td>
               <td class="px-4 py-3 text-[12px] whitespace-nowrap" style="color: var(--color-text-muted)">{{ formatDateTime(row.created_at) }}</td>
@@ -417,7 +431,7 @@ async function submitCreate() {
                 <input
                   v-model="employeeSearchText"
                   @focus="openEmployeeDropdown"
-                  @blur="() => setTimeout(closeEmployeeDropdown, 120)"
+                  @blur="handleEmployeeBlur"
                   @input="onEmployeeInput"
                   @keydown="onEmployeeKeydown"
                   type="text"
@@ -449,7 +463,7 @@ async function submitCreate() {
                           {{ emp.department || '-' }}<span v-if="emp.position"> • {{ emp.position }}</span>
                         </div>
                       </div>
-                      <span class="text-[11px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 whitespace-nowrap" style="border-color: var(--color-border)">
+                      <span class="text-[11px] px-2 py-0.5 rounded-full border bg-slate-50 dark:bg-blue-800/30 text-slate-700 dark:text-blue-300 whitespace-nowrap" style="border-color: var(--color-border)">
                         {{ emp.status || '—' }}
                       </span>
                     </div>

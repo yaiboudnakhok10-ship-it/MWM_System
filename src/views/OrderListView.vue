@@ -210,10 +210,10 @@ async function saveOrderRequest() {
 }
 
 function getStatusClass(status) {
-  if (status === 'approved') return 'bg-green-50 text-green-600 border-green-100'
-  if (status === 'rejected') return 'bg-red-50 text-red-600 border-red-100'
-  if (status === 'completed') return 'bg-blue-50 text-blue-600 border-blue-100'
-  return 'bg-amber-50 text-amber-600 border-amber-100'
+  if (status === 'approved') return 'bg-green-50 text-green-600 border-green-100 dark:bg-green-800/20 dark:border-green-800/20 dark:text-green-400'
+  if (status === 'rejected') return 'bg-red-50 text-red-600 border-red-100 dark:bg-red-800/20 dark:border-red-800/20 dark:text-red-400'
+  if (status === 'completed') return 'bg-blue-50 text-blue-600 border-blue-100 dark:bg-blue-800/20 dark:border-blue-800/20 dark:text-blue-400'
+  return 'bg-amber-50 text-amber-600 border-amber-100 dark:bg-amber-800/20 dark:border-amber-800/20 dark:text-amber-400'
 }
 
 function getStatusText(status) {
@@ -283,7 +283,7 @@ async function copyLink(url) {
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         >
           <option value="all">ทุกประเภทสินค้า</option>
-          <option v-for="cat in categories" :key="cat.id" :value="cat.id">{{ cat.category_name }}</option>
+          <option v-for="cat in categories" :key="cat.id" :value="cat.id" style="background-color: var(--color-bg-card)">{{ cat.category_name }}</option>
         </select>
       </div>
       <div class="w-full md:w-48">
@@ -292,11 +292,11 @@ async function copyLink(url) {
           class="w-full px-3 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         >
-          <option value="all">ทุกสถานะ</option>
-          <option value="pending">รออนุมัติ</option>
-          <option value="approved">อนุมัติ</option>
-          <option value="rejected">ไม่อนุมัติ</option>
-          <option value="completed">เสร็จสิ้น</option>
+          <option value="all" style="background-color: var(--color-bg-card)">ทุกสถานะ</option>
+          <option value="pending" style="background-color: var(--color-bg-card)">รออนุมัติ</option>
+          <option value="approved" style="background-color: var(--color-bg-card)">อนุมัติ</option>
+          <option value="rejected" style="background-color: var(--color-bg-card)">ไม่อนุมัติ</option>
+          <option value="completed" style="background-color: var(--color-bg-card)">เสร็จสิ้น</option>
         </select>
       </div>
     </div>
@@ -387,8 +387,8 @@ async function copyLink(url) {
                 class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
                 style="border-color: var(--color-border); background: var(--color-bg-body)"
               >
-                <option value="" disabled>เลือกสินค้า</option>
-                <option v-for="item in items" :key="item.id" :value="item.id">{{ item.item_code }} - {{ item.item_name }}</option>
+                <option value="" disabled style="background-color: var(--color-bg-card)">เลือกสินค้า</option>
+                <option v-for="item in items" :key="item.id" :value="item.id" style="background-color: var(--color-bg-card)">{{ item.item_code }} - {{ item.item_name }}</option>
               </select>
             </div>
 
@@ -421,8 +421,8 @@ async function copyLink(url) {
                 class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
                 style="border-color: var(--color-border); background: var(--color-bg-body)"
               >
-                <option value="">ไม่ระบุประเภท</option>
-                <option v-for="cat in categories" :key="cat.id" :value="cat.id">{{ cat.category_name }}</option>
+                <option value="" style="background-color: var(--color-bg-card)">ไม่ระบุประเภท</option>
+                <option v-for="cat in categories" :key="cat.id" :value="cat.id" style="background-color: var(--color-bg-card)">{{ cat.category_name }}</option>
               </select>
             </div>
 
@@ -433,10 +433,10 @@ async function copyLink(url) {
                 class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
                 style="border-color: var(--color-border); background: var(--color-bg-body)"
               >
-                <option value="pending">รออนุมัติ</option>
-                <option value="approved">อนุมัติ</option>
-                <option value="rejected">ไม่อนุมัติ</option>
-                <option value="completed">เสร็จสิ้น</option>
+                <option value="pending" style="background-color: var(--color-bg-card)">รออนุมัติ</option>
+                <option value="approved" style="background-color: var(--color-bg-card)">อนุมัติ</option>
+                <option value="rejected" style="background-color: var(--color-bg-card)">ไม่อนุมัติ</option>
+                <option value="completed" style="background-color: var(--color-bg-card)">เสร็จสิ้น</option>
               </select>
             </div>
 

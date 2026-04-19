@@ -1,8 +1,10 @@
 <script setup>
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
+const router = useRouter()
 const username = ref('')
 const password = ref('')
 const showPassword = ref(false)
@@ -21,9 +23,12 @@ async function handleLogin() {
     if (!result.success) {
       error.value = result.message
     } else {
-      // Success: navigation is handled by router.push or automatically redirected
-      // But let's navigate explicitly just in case
-      window.location.href = '#/dashboard'
+      const role = auth.user?.role || 'staff'
+      if (role === 'admin') {
+        router.push('/dashboard')
+      } else {
+        router.push('/u/home')
+      }
     }
   } catch (err) {
     error.value = 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์'
