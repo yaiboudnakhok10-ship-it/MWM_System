@@ -13,6 +13,7 @@
     "bcryptjs": "^3.0.3",
     "chart.js": "^4.5.1",
     "overlayscrollbars": "^2.15.1",
+    "overlayscrollbars-vue": "^0.5.9",
     "pinia": "^3.0.4",
     "vue": "^3.4.38",
     "vue-router": "^4.6.4",
