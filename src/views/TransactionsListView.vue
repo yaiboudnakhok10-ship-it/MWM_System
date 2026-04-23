@@ -1,10 +1,17 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import { supabase, supabaseEmployee } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
+import { useUiStore } from '@/stores/ui'
+import logoThaiDrill from '@/assets/thaidrill_company.png'
+import logoThaiDrillLao from '@/assets/thaidrillLao_company.png'
+import logoTDL_MVDC from '@/assets/tdl&mvdc_company.jpg'
+import logoSunny from '@/assets/sunnycompany.png'
 
 const auth = useAuthStore()
+const ui = useUiStore()
 const loading = ref(true)
 const saving = ref(false)
 const orders = ref([])
@@ -15,6 +22,27 @@ const selectedStatus = ref('pending')
 const isScanModalOpen = ref(false)
 const scanResult = ref(null)
 const scanLoading = ref(false)
+const isBillPreviewOpen = ref(false)
+const billPreviewResult = ref(null)
+const isApproveBillConfirmOpen = ref(false)
+const companyOptions = ['รถเจาะไทย', 'ซั่นนี่ เฟอติไลเซอร์', 'ปู่รากหญ้า', 'ที่ดี พึกษ์', 'ที่ดี คอนแทรคเตอร์', 'ไทดริว ลาว', 'อื่นๆ แมชชีน']
+const purposeOptions = [
+  { key: 'broken', label: 'ขาดไม่ได้ระดับ' },
+  { key: 'pm', label: 'ทำ PM วาระ' },
+  { key: 'rust', label: 'มีอาการรั่วซึม' },
+  { key: 'colorFade', label: 'สึกหรอตามอายุการใช้งาน' },
+  { key: 'colorMismatch', label: 'เชื่อมพอกกันสึกหรอ' },
+  { key: 'cracked', label: 'มีการแตกร้าว' },
+  { key: 'reserve', label: 'เป็นอะไหล่สำรอง' },
+  { key: 'damageLoss', label: 'อาไหล่สูญหาย' },
+  { key: 'fromAccident', label: 'จากอุบัติเหตุ' },
+  { key: 'changeOther', label: 'แก้ไข/ดัดแปลง' },
+  { key: 'preventAccident', label: 'ป้องกันเกิดอุบัติเหตุ' },
+  { key: 'clean', label: 'ทำความสะอาด' },
+  { key: 'officeTool', label: 'อุปกรณ์สำนักงาน' },
+  { key: 'other1', label: 'อื่นๆ' },
+  { key: 'other2', label: 'อื่นๆ' }
+]
 
 // Employee Search States
 const employeeSearchLoading = ref(false)
@@ -60,13 +88,13 @@ function selectEmployee(emp, field, orderId = null) {
 const groupedOrders = computed(() => {
   const key = searchText.value.trim().toLowerCase()
   const filtered = orders.value.filter((row) => {
+    if (row.status !== 'pending') return false
+    if (!key) return true
     const itemCode = row.items?.item_code?.toLowerCase() || ''
     const itemName = row.items?.item_name?.toLowerCase() || ''
     const note = row.note?.toLowerCase() || ''
     const remark = row.remark?.toLowerCase() || ''
-    const matchSearch = !key || itemCode.includes(key) || itemName.includes(key) || note.includes(key) || remark.includes(key)
-    const matchStatus = selectedStatus.value === 'all' || row.status === selectedStatus.value
-    return matchSearch && matchStatus
+    return itemCode.includes(key) || itemName.includes(key) || note.includes(key) || remark.includes(key)
   })
 
   const groups = {}
@@ -125,8 +153,10 @@ async function processBarcodeInput(code) {
   if (isNaN(requestId)) return
 
   scanLoading.value = true
-  isScanModalOpen.value = true
+  isBillPreviewOpen.value = true
   scanResult.value = null
+  billPreviewResult.value = { requestId, items: [] }
+  let shouldRenderBarcode = false
 
   try {
     const { data, error } = await supabase
@@ -139,14 +169,21 @@ async function processBarcodeInput(code) {
 
     if (!data || data.length === 0) {
       scanResult.value = { requestId, items: [], notFound: true }
+      billPreviewResult.value = { requestId, items: [] }
     } else {
       scanResult.value = { requestId, items: data, notFound: false }
+      billPreviewResult.value = { requestId, items: data }
+      shouldRenderBarcode = true
     }
   } catch (err) {
     alert('เกิดข้อผิดพลาดในการค้นหา: ' + err.message)
-    isScanModalOpen.value = false
+    closeBillPreview()
   } finally {
     scanLoading.value = false
+    if (shouldRenderBarcode && isBillPreviewOpen.value) {
+      await nextTick()
+      await renderBillPreviewBarcode(requestId)
+    }
   }
 }
 
@@ -164,16 +201,30 @@ function initScanForms(items) {
   }
 
   items.forEach((order) => {
+    const tx = getTransactionByOrderId(order.id)
     // ดึงชื่อผู้ขอจาก systemUsers
     const creator = systemUsers.value.find(u => u.id === order.created_by)
     const creatorName = creator ? creator.fullname : ''
+    const persistedReturn = order.is_return
+    const isEditable = order.status === 'pending' || order.status === 'approved'
+    const persistedReturnSelected = persistedReturn === true || persistedReturn === false
+    const persistedReturnDate = tx?.return_date ? tx.return_date.split('T')[0] : ''
+    const derivedIsReturnFromDate = persistedReturnDate ? true : null
+
+    const initialIsReturn = persistedReturnSelected
+      ? persistedReturn
+      : derivedIsReturnFromDate
+
+    const returnSelected = persistedReturnSelected || Boolean(persistedReturnDate)
 
     forms[order.id] = {
-      amount: Number(order.amount || 1),
+      amount: Number(tx?.amount ?? order.amount ?? 1),
       max_amount: Number(order.amount || 1),
-      unit: order.unit || '',
+      unit: tx?.unit || order.unit || '',
       remark: order.remark || '',
-      return_date: '',
+      return_date: persistedReturnDate,
+      is_return: initialIsReturn,
+      return_choice_locked: isEditable ? returnSelected : true,
       status: order.status === 'completed' || order.status === 'rejected' ? order.status : 'completed',
       mr_number: order.mr_number || '',
       company: order.company || '',
@@ -197,6 +248,99 @@ function openGroupModal(group) {
   }
   isScanModalOpen.value = true
 }
+async function openBillPreview(group) {
+  scanResult.value = {
+    requestId: group.requestId,
+    items: group.items,
+    notFound: false
+  }
+  billPreviewResult.value = {
+    requestId: group.requestId,
+    items: group.items
+  }
+  isBillPreviewOpen.value = true
+  await nextTick()
+  await renderBillPreviewBarcode(group.requestId)
+}
+
+function closeBillPreview() {
+  isBillPreviewOpen.value = false
+  billPreviewResult.value = null
+}
+
+function setReturnMode(orderId, shouldReturn) {
+  const form = scanItemForms.value[orderId]
+  if (!form) return
+  form.is_return = shouldReturn
+  if (!shouldReturn) {
+    form.return_date = ''
+  }
+}
+
+const isReturnDateModalOpen = ref(false)
+const returnDateOrderId = ref(null)
+const returnDateDraft = ref('')
+const returnDateReadOnly = ref(false)
+const returnDateModalTitle = computed(() => (returnDateReadOnly.value ? 'ดูวันที่ส่งคืน' : 'กำหนดวันที่ส่งคืน'))
+
+function isReturnChoiceLocked(orderId) {
+  return scanItemForms.value[orderId]?.return_choice_locked === true
+}
+
+function closeReturnDateModal() {
+  isReturnDateModalOpen.value = false
+  returnDateOrderId.value = null
+  returnDateDraft.value = ''
+  returnDateReadOnly.value = false
+}
+
+function openReturnDateModal(orderId, opts = {}) {
+  const form = scanItemForms.value[orderId]
+  if (!form) return
+  returnDateOrderId.value = orderId
+  returnDateDraft.value = form.return_date || new Date().toISOString().slice(0, 10)
+  returnDateReadOnly.value = opts.readOnly === true
+  isReturnDateModalOpen.value = true
+}
+
+function confirmReturnDate() {
+  if (returnDateReadOnly.value) {
+    closeReturnDateModal()
+    return
+  }
+  const orderId = returnDateOrderId.value
+  const form = scanItemForms.value[orderId]
+  if (!form) {
+    closeReturnDateModal()
+    return
+  }
+  form.is_return = true
+  form.return_date = returnDateDraft.value || null
+  form.return_choice_locked = true
+  closeReturnDateModal()
+}
+
+function onReturnClick(order) {
+  const form = scanItemForms.value[order.id]
+  if (!form) return
+  if (!canWithdrawScan(order)) return
+  if (form.return_choice_locked) {
+    if (form.is_return !== true) return
+    openReturnDateModal(order.id, { readOnly: true })
+    return
+  }
+  openReturnDateModal(order.id, { readOnly: false })
+}
+
+function onNotReturnClick(order) {
+  const form = scanItemForms.value[order.id]
+  if (!form) return
+  if (!canWithdrawScan(order)) return
+  if (form.return_choice_locked) return
+  form.is_return = false
+  form.return_date = ''
+  form.return_choice_locked = true
+}
 
 // เมื่อ scanResult เปลี่ยน ให้ init forms
 watch(
@@ -212,7 +356,39 @@ function canWithdrawScan(order) {
   return order.status === 'pending' || order.status === 'approved'
 }
 
+const isBillPreviewCompleted = computed(() => {
+  const items = billPreviewResult.value?.items || []
+  return items.length > 0 && items.every((row) => row.status === 'completed')
+})
+
+const approveConfirmMessage = computed(() => {
+  const items = billPreviewResult.value?.items || []
+  const count = items.filter((row) => row.status === 'pending' || row.status === 'approved').length
+  return count > 0 ? `ยืนยันการอนุมัติใบเบิกนี้ (${count} รายการ)?` : 'ยืนยันการอนุมัติใบเบิกนี้?'
+})
+
+function openApproveBillConfirm() {
+  isApproveBillConfirmOpen.value = true
+}
+
+function closeApproveBillConfirm() {
+  isApproveBillConfirmOpen.value = false
+}
+
+async function confirmApproveBill() {
+  isApproveBillConfirmOpen.value = false
+  await submitBillPreviewWithdraw()
+}
+
 async function submitScanWithdraw() {
+  return submitGroupWithdraw({ closeScanModal: true, closeBillPreviewModal: false })
+}
+
+async function submitBillPreviewWithdraw() {
+  return submitGroupWithdraw({ closeScanModal: false, closeBillPreviewModal: true })
+}
+
+async function submitGroupWithdraw({ closeScanModal, closeBillPreviewModal }) {
   if (!auth.user?.id) return alert('ไม่พบข้อมูลผู้ใช้ กรุณาเข้าสู่ระบบใหม่')
 
   const items = scanResult.value?.items || []
@@ -239,7 +415,7 @@ async function submitScanWithdraw() {
           category_id: order.category_id || null,
           document_url: order.document_url || null,
           image_url: order.image_url || null,
-          return_date: form.return_date || null,
+          return_date: form.is_return ? form.return_date || null : null,
           note: form.note || null,
           remark: form.remark || null,
           order_id: order.id,
@@ -264,6 +440,7 @@ async function submitScanWithdraw() {
           withdraw_purpose: form.withdraw_purpose || null,
           receive_by: sharedReceiveBy.value || null,
           inspector_by: sharedInspectorBy.value || null,
+          is_return: form.is_return,
           note: form.note || null,
         })
         .eq('id', order.id)
@@ -277,9 +454,14 @@ async function submitScanWithdraw() {
       old_value: { request_id: scanResult.value?.requestId, count: withdrawableItems.length },
     })
 
-    isScanModalOpen.value = false
+    if (closeScanModal) {
+      isScanModalOpen.value = false
+    }
+    if (closeBillPreviewModal) {
+      closeBillPreview()
+    }
     await fetchData()
-    alert(`บันทึกสำเร็จ ${withdrawableItems.length} รายการ`)
+    ui.showToast(`บันทึกสำเร็จ ${withdrawableItems.length} รายการ`, 'success')
   } catch (err) {
     if ((err.message || '').includes('stock_insufficient')) {
       alert('สต็อกสินค้าไม่พอสำหรับการเบิกตามจำนวนที่ระบุ')
@@ -323,7 +505,7 @@ async function fetchData() {
     const [{ data: ordersData, error: ordersError }, { data: usersData, error: usersError }, { data: txData, error: txError }] = await Promise.all([
       supabase.from('order_req').select('*, items(item_code,item_name,current_stock), category(category_name)').order('created_at', { ascending: false }),
       supabase.from('system_users').select('id, fullname, emp_code'),
-      supabase.from('transactions').select('order_id, return_date, created_at').order('created_at', { ascending: false })
+      supabase.from('transactions').select('order_id, amount, unit, return_date, created_at').order('created_at', { ascending: false })
     ])
     if (ordersError) throw ordersError
     if (usersError) throw usersError
@@ -376,10 +558,92 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString('th-TH')
 }
 
+function formatDateOnly(value) {
+  if (!value) return '-'
+  return new Date(value).toLocaleDateString('th-TH')
+}
+
 function getReturnDate(orderId) {
   const tx = transactions.value.find((row) => row.order_id === orderId && row.return_date)
   if (!tx?.return_date) return '-'
   return new Date(tx.return_date).toLocaleDateString('th-TH')
+}
+
+function getTransactionByOrderId(orderId) {
+  return transactions.value.find((row) => row.order_id === orderId) || null
+}
+
+function getWithdrawAmount(order) {
+  const tx = getTransactionByOrderId(order.id)
+  return tx?.amount ?? order.amount ?? '-'
+}
+
+function getWithdrawUnit(order) {
+  const tx = getTransactionByOrderId(order.id)
+  return tx?.unit || order.unit || '-'
+}
+
+function getMachineNumber(note) {
+  return note?.split('\nสาเหตุทดแทน: ')[0]?.replace('หมายเลขเครื่องจักร: ', '') || '-'
+}
+
+function getReplaceReason(note) {
+  return note?.split('\nสาเหตุทดแทน: ')[1] || '-'
+}
+
+function isPurposeChecked(value, label) {
+  if (!value) return false
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .some((part) => part.startsWith(label))
+}
+
+function getPurposeDetail(value, label) {
+  if (!value) return ''
+  const entry = value
+    .split(',')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(label))
+  if (!entry) return ''
+  return entry.slice(label.length).trim()
+}
+
+function getBillPreviewTotalAmount() {
+  return (billPreviewResult.value?.items || []).reduce((sum, order) => sum + Number(getWithdrawAmount(order) || 0), 0)
+}
+
+function loadJsBarcode() {
+  return new Promise((resolve, reject) => {
+    if (window.JsBarcode) {
+      resolve(window.JsBarcode)
+      return
+    }
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js'
+    s.onload = () => resolve(window.JsBarcode)
+    s.onerror = reject
+    document.head.appendChild(s)
+  })
+}
+
+async function renderBillPreviewBarcode(requestId) {
+  if (!requestId) return
+  try {
+    const barcodeLib = await loadJsBarcode()
+    const barcodeElement = document.querySelector('#barcode-bill-preview')
+    if (!barcodeElement) return
+    barcodeLib('#barcode-bill-preview', String(requestId), {
+      format: 'CODE128',
+      width: 1.2,
+      height: 35,
+      displayValue: true,
+      fontSize: 10,
+      margin: 0
+    })
+  } catch (err) {
+    console.error('Failed to load JsBarcode:', err)
+  }
 }
 
 function canWithdraw(order) {
@@ -478,27 +742,13 @@ async function submitWithdraw() {
         <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">อนุมัติ/เบิกสินค้า</h1>
         <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">ข้อมูลคำขอที่ส่งมาจากผู้ใช้งาน</p>
       </div>
-      <!-- indicator แสดงว่า barcode listener ทำงานอยู่ -->
-      <div class="flex items-center gap-2 px-3 py-1.5 rounded-full border text-[12px]" style="border-color: var(--color-border); color: var(--color-text-muted)">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        พร้อมรับบาร์โค้ด
-      </div>
     </div>
 
-    <!-- filter bar -->
+    <!-- search bar -->
     <div class="flex flex-col md:flex-row gap-4 mb-6 p-4 rounded-xl border" style="background: var(--color-bg-card); border-color: var(--color-border)">
       <div class="flex-1 relative">
         <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-[14px]" style="color: var(--color-text-muted)"></i>
         <input v-model="searchText" type="text" placeholder="ค้นหารหัส, ชื่อสินค้า, หมายเหตุ..." class="w-full pl-9 pr-4 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all" style="border-color: var(--color-border); color: var(--color-text-primary)" />
-      </div>
-      <div class="w-full md:w-48">
-        <select v-model="selectedStatus" class="w-full px-3 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all" style="border-color: var(--color-border); color: var(--color-text-primary)">
-          <option value="all" style="background-color: var(--color-bg-card)">ทุกสถานะ</option>
-          <option value="pending" style="background-color: var(--color-bg-card)">รออนุมัติ</option>
-          <option value="approved" style="background-color: var(--color-bg-card)">อนุมัติ</option>
-          <option value="completed" style="background-color: var(--color-bg-card)">เบิกแล้ว</option>
-          <option value="rejected" style="background-color: var(--color-bg-card)">ไม่อนุมัติ</option>
-        </select>
       </div>
     </div>
 
@@ -544,10 +794,12 @@ async function submitWithdraw() {
                 </span>
               </td>
               <td class="px-4 py-3 text-center">
-                <button v-if="group.items.some(canWithdrawScan)" @click="openGroupModal(group)" class="px-3 py-1 rounded bg-emerald-50 dark:bg-emerald-700/30 dark:border-emerald-700/30 dark:text-emerald-500 text-emerald-700 border border-emerald-200 text-[11px] font-medium hover:bg-emerald-100 transition-colors">
-                  <i class="fa-solid fa-check-double mr-1"></i>อนุมัติคำขอ
-                </button>
-                <span v-else class="text-[11px]" style="color: var(--color-text-muted)">ดำเนินการแล้ว</span>
+                <div class="flex flex-wrap items-center justify-center gap-2">
+                  <button @click="openBillPreview(group)" class="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-blue-50 dark:bg-blue-700/20 dark:border-blue-700/30 dark:text-blue-400 text-blue-700 border border-blue-200 text-[11px] font-medium hover:bg-blue-100 transition-colors">
+                    <i class="fa-solid fa-file-lines text-[12px]"></i>
+                    <span>เบิกใบบิน</span>
+                  </button>
+                </div>
               </td>
             </tr>
             <tr v-if="loading">
@@ -560,6 +812,458 @@ async function submitWithdraw() {
         </table>
       </div>
     </div>
+
+    <!-- ====== BILL PREVIEW MODAL ====== -->
+    <Transition name="slide-right">
+      <div v-if="isBillPreviewOpen && billPreviewResult" class="fixed inset-0 z-50 flex justify-end">
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="closeBillPreview"></div>
+        <div class="relative w-full max-w-[1040px] h-full shadow-2xl flex flex-col" style="background: var(--color-bg-card)">
+          <div class="px-6 py-4 border-b flex items-center justify-between" style="border-color: var(--color-border)">
+            <div>
+              <div class="flex items-center gap-2">
+                <i class="fa-solid fa-file-lines text-[16px]" style="color: var(--color-text-muted)"></i>
+                <h2 class="text-[16px] font-semibold" style="color: var(--color-text-primary)">เบิกใบบิน</h2>
+                <span class="px-2 py-0.5 rounded-full text-[11px] bg-blue-50 text-blue-700 dark:bg-blue-800/20 dark:border-blue-800/20 dark:text-blue-500 border border-blue-100">
+                  Request #{{ billPreviewResult.requestId }}
+                </span>
+              </div>
+              <p class="text-[12px] mt-0.5" style="color: var(--color-text-muted)">
+                แสดงโครงร่างใบบินจากข้อมูลที่บันทึกไว้ {{ billPreviewResult.items.length }} รายการ
+              </p>
+            </div>
+            <button @click="closeBillPreview" class="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+              <i class="fa-solid fa-xmark" style="color: var(--color-text-muted)"></i>
+            </button>
+          </div>
+
+          <div class="flex-1 overflow-y-auto p-6">
+            <div v-if="scanLoading" class="flex items-center justify-center py-16">
+              <div class="flex flex-col items-center gap-3">
+                <div class="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                <p class="text-[13px]" style="color: var(--color-text-muted)">กำลังค้นหา...</p>
+              </div>
+            </div>
+
+            <div v-else-if="scanResult?.notFound" class="flex flex-col items-center justify-center py-16 gap-3">
+              <i class="fa-solid fa-circle-xmark text-[40px] text-red-400"></i>
+              <p class="text-[14px] font-medium" style="color: var(--color-text-primary)">ไม่พบใบเบิกเลขที่ {{ scanResult.requestId }}</p>
+              <p class="text-[13px]" style="color: var(--color-text-muted)">กรุณาตรวจสอบบาร์โค้ดและลองใหม่อีกครั้ง</p>
+            </div>
+
+            <div v-else class="paper-scroll-wrap">
+              <div
+                class="paper-sheet text-gray-900 shadow-xl rounded-lg overflow-hidden font-['Niramit',sans-serif] text-[9px] relative"
+                :class="isBillPreviewCompleted ? 'bg-blue-50/30 ring-4 ring-blue-500/25' : 'bg-white'"
+                style="color: #111;"
+              >
+                <div v-if="isBillPreviewCompleted" class="absolute inset-0 pointer-events-none flex items-center justify-center">
+                  <div class="rotate-[-12deg] border-[6px] border-blue-600/25 bg-blue-600/5 px-10 py-6">
+                    <div class="text-[78px] font-extrabold tracking-widest text-blue-700/15 leading-none whitespace-nowrap">เบิกแล้ว</div>
+                  </div>
+                </div>
+
+                <div class="p-6 pb-4 pt-4 relative">
+                  <div class="relative flex items-stretch gap-3 mb-0">
+                    <div class="flex-1 min-w-0 flex flex-col z-10">
+                      <div class="flex items-center gap-3">
+                        <div class="w-[55px] h-[36px] overflow-hidden flex items-center justify-center bg-white">
+                          <img :src="logoThaiDrill" alt="ThaiDrill" class="max-w-full max-h-full object-contain" />
+                        </div>
+                        <div class="w-[69px] h-[59px] overflow-hidden flex items-center justify-center bg-white">
+                          <img :src="logoThaiDrillLao" alt="ThaiDrill Lao" class="max-w-full max-h-full object-contain" />
+                        </div>
+                        <div class="w-[60px] h-[32px] overflow-hidden flex items-center justify-center bg-white p-0.5">
+                          <img :src="logoTDL_MVDC" alt="TDLAO & MVDC" class="max-w-full max-h-full object-contain" />
+                        </div>
+                        <div class="w-[45px] h-[45px] overflow-hidden flex items-center justify-center bg-white p-0.5">
+                          <img :src="logoSunny" alt="SUNNY" class="max-w-full max-h-full object-contain" />
+                        </div>
+                      </div>
+
+                      <div class="mt-0.3 space-y-1">
+                        <div class="flex items-center gap-2">
+                          <span class="font-semibold whitespace-nowrap text-[9px]">เลขที่ MR</span>
+                          <input :value="billPreviewResult.items[0]?.mr_number || '-'" readonly class="flex-1 max-w-[189px] border-b border-gray-400 outline-none text-[9px] px-1 bg-transparent" />
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <span class="font-semibold whitespace-nowrap text-[9px]">วันที่</span>
+                          <input :value="formatDateOnly(billPreviewResult.items[0]?.created_at)" readonly class="border-b border-gray-400 outline-none text-[9px] px-1 w-52 bg-transparent" />
+                        </div>
+                      </div>
+
+                      <div class="flex items-center gap-5 mt-auto pt-0.3 text-[9px]">
+                        <label class="flex items-center gap-1.5">
+                          <input type="checkbox" disabled class="w-3 h-3 accent-gray-700" />
+                          เบิกเพื่อขาย
+                        </label>
+                        <label class="flex items-center gap-1.5">
+                          <input type="checkbox" disabled class="w-3 h-3 accent-gray-700" />
+                          เบิกใหม่
+                        </label>
+                        <div class="flex items-end gap-1.5">
+                          <span class="whitespace-nowrap">ทดแทนของเก่า : สาเหตุ</span>
+                          <input :value="getReplaceReason(billPreviewResult.items[0]?.note)" readonly class="border-b border-gray-400 outline-none text-[9px] px-1 flex-1 min-w-[276px] bg-transparent" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <h1 class="text-[18px] font-bold tracking-wide" style="color: #111;">ใบเบิกพัสดุ</h1>
+                    </div>
+
+                    <div class="shrink-0 z-10">
+                      <div class="text-[9px] text-gray-500 mb-0.2 text-right">FM-MT-ST01-02 REV 03 - 09/04/2669</div>
+                      <div class="border border-gray-400 p-0.5 text-[9px] min-w-[150px]">
+                        <div v-for="(label, idx) in companyOptions" :key="idx" class="flex items-center gap-1.5 leading-[1.2]">
+                          <input type="radio" disabled :checked="billPreviewResult.items[0]?.company === label" class="w-2 h-2 accent-gray-700" />
+                          <span>{{ label }}</span>
+                        </div>
+                        <div class="flex items-center gap-1 mt-0.2 pt-0.3 border-t border-gray-300">
+                          <span class="text-[10px]">CONST CENTER</span>
+                          <div class="flex gap-1 ml-1">
+                            <div v-for="i in 5" :key="i" class="w-3 h-3 border border-gray-400 text-center text-[9px]">-</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-1 mt-2 text-[9px]">
+                    <div class="flex items-center gap-1">
+                      <span class="font-semibold">รหัสใบสั่งช่อม</span>
+                      <input :value="billPreviewResult.items[0]?.fixed_bill_number || '-'" readonly class="border-b border-gray-400 outline-none w-28 bg-transparent" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span>หมายเลขเครื่องจักร</span>
+                      <input :value="getMachineNumber(billPreviewResult.items[0]?.note)" readonly class="border-b border-gray-400 outline-none w-28 bg-transparent" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span>มิเตอร์ (ชม.)</span>
+                      <input :value="billPreviewResult.items[0]?.metter_hour || '-'" readonly class="border-b border-gray-400 outline-none px-1 w-20 bg-transparent" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span>มิเตอร์ (กม.)</span>
+                      <input :value="billPreviewResult.items[0]?.metter_kilometter || '-'" readonly class="border-b border-gray-400 outline-none px-1 w-20 bg-transparent" />
+                    </div>
+                  </div>
+
+                  <div class="border border-gray-300 rounded p-0.5 mb-0.8">
+                    <div class="font-semibold mb-1 text-[9px]">จุดประสงค์การเบิก</div>
+                    <div class="grid grid-cols-5 gap-x-4 gap-y-1 text-[9px]">
+                      <div v-for="col in 5" :key="col" class="space-y-1">
+                        <div v-for="opt in purposeOptions.slice((col - 1) * 3, col * 3)" :key="opt.key" class="flex items-end gap-1.5 min-h-[18px]">
+                          <input type="checkbox" disabled :checked="isPurposeChecked(billPreviewResult.items[0]?.withdraw_purpose, opt.label)" class="w-3 h-3 accent-gray-700 shrink-0" />
+                          <span class="whitespace-nowrap pb-0.5">{{ opt.label }}</span>
+                          <div v-if="opt.key === 'pm' || opt.key.startsWith('other')" class="border-b border-gray-300 flex-1 min-w-[20px] px-1 pb-0.5 h-[16px]">
+                            {{ getPurposeDetail(billPreviewResult.items[0]?.withdraw_purpose, opt.label) }}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div v-if="!isBillPreviewCompleted" class="mb-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+                    <div class="grid grid-cols-2 gap-3">
+                      <div class="space-y-1 relative">
+                        <label class="text-[11px] font-medium text-blue-700">ผู้รับของ (ค้นหาชื่อ/รหัส)</label>
+                        <input
+                          v-model="sharedReceiveBy"
+                          @input="activeSearchField = 'receive_by'; searchEmployees($event.target.value)"
+                          type="text"
+                          class="w-full px-2 py-1.5 border rounded-lg text-[12px] focus:outline-none bg-white"
+                          style="border-color: var(--color-border)"
+                          placeholder="พิมพ์เพื่อค้นหา..."
+                        />
+                        <div v-if="activeSearchField === 'receive_by' && employeeResults.length > 0" class="absolute left-0 right-0 top-full mt-1 bg-white border rounded-lg shadow-xl z-30 max-h-48 overflow-y-auto">
+                          <button
+                            v-for="emp in employeeResults" :key="emp.employee_code"
+                            @click="selectEmployee(emp, 'receive_by')"
+                            class="w-full text-left px-3 py-2 text-[12px] hover:bg-blue-50 border-b last:border-0"
+                          >
+                            <span class="font-medium">{{ emp.fullname }}</span>
+                            <span class="text-[10px] text-gray-500 ml-2">({{ emp.employee_code }})</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="space-y-1 relative">
+                        <label class="text-[11px] font-medium text-blue-700">ผู้ตรวจรับ (ค้นหาชื่อ/รหัส)</label>
+                        <input
+                          v-model="sharedInspectorBy"
+                          @input="activeSearchField = 'inspector_by'; searchEmployees($event.target.value)"
+                          type="text"
+                          class="w-full px-2 py-1.5 border rounded-lg text-[12px] focus:outline-none bg-white"
+                          style="border-color: var(--color-border)"
+                          placeholder="พิมพ์เพื่อค้นหา..."
+                        />
+                        <div v-if="activeSearchField === 'inspector_by' && employeeResults.length > 0" class="absolute left-0 right-0 top-full mt-1 bg-white border rounded-lg shadow-xl z-30 max-h-48 overflow-y-auto">
+                          <button
+                            v-for="emp in employeeResults" :key="emp.employee_code"
+                            @click="selectEmployee(emp, 'inspector_by')"
+                            class="w-full text-left px-3 py-2 text-[12px] hover:bg-blue-50 border-b last:border-0"
+                          >
+                            <span class="font-medium">{{ emp.fullname }}</span>
+                            <span class="text-[10px] text-gray-500 ml-2">({{ emp.employee_code }})</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <table class="w-full border-collapse text-[9px] mb-0.5">
+                    <thead>
+                      <tr>
+                        <th rowspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-5 bg-gray-300">ลำดับ</th>
+                        <th rowspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-21 bg-gray-300">รหัสสินค้า</th>
+                        <th rowspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-29 bg-gray-300">รายการ</th>
+                        <th colspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-26 bg-gray-300">จำนวน (เบิก)</th>
+                        <th colspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-28 bg-gray-300">จำนวนเงิน</th>
+                        <th rowspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-10 bg-gray-300">คืน</th>
+                        <th rowspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-10 bg-gray-300">ไม่คืน</th>
+                        <th rowspan="2" class="border border-gray-400 py-0.1 text-center text-[10px] w-20 bg-gray-300">หมายเหตุ</th>
+                      </tr>
+                      <tr>
+                        <th class="border border-gray-400 px-0.3 py-0.1 text-center text-[9px] w-12 bg-gray-300">จำนวน</th>
+                        <th class="border border-gray-400 px-0.3 py-0.1 text-center text-[9px] w-12 bg-gray-300">หน่วย</th>
+                        <th class="border border-gray-400 px-0.3 py-0.1 text-center text-[9px] w-12 bg-gray-300">ราคา / หน่วย</th>
+                        <th class="border border-gray-400 px-0.3 py-0.1 text-center text-[9px] w-12 bg-gray-300">รวม</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(order, idx) in billPreviewResult.items" :key="order.id" class="bg-blue-50/40">
+                        <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">{{ idx + 1 }}</td>
+                        <td class="border border-gray-400 px-1 py-1 text-center font-mono text-[9px]">{{ order.items?.item_code || '-' }}</td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">{{ order.items?.item_name || '-' }}</td>
+                        <td class="border border-gray-400 px-1 py-1 text-center font-bold text-blue-700 text-[9px]">
+                          <span v-if="isBillPreviewCompleted">{{ getWithdrawAmount(order) }}</span>
+                          <input
+                            v-else-if="scanItemForms[order.id]"
+                            v-model.number="scanItemForms[order.id].amount"
+                            type="number"
+                            min="1"
+                            :max="scanItemForms[order.id].max_amount"
+                            :disabled="!canWithdrawScan(order)"
+                            class="w-full text-center bg-transparent outline-none p-0 m-0 border-none h-full focus:ring-0 hide-number-spinners"
+                            style="line-height: 1;"
+                          />
+                          <span v-else>{{ getWithdrawAmount(order) }}</span>
+        </td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">
+                          <span v-if="isBillPreviewCompleted">{{ getWithdrawUnit(order) }}</span>
+                          <input
+                            v-else-if="scanItemForms[order.id]"
+                            v-model="scanItemForms[order.id].unit"
+                            type="text"
+                            readonly
+                            class="w-full text-center bg-transparent outline-none p-0 m-0 border-none h-full focus:ring-0"
+                            style="line-height: 1;"
+                          />
+                          <span v-else>{{ getWithdrawUnit(order) }}</span>
+                        </td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-gray-400 text-[9px]">-</td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-gray-400 text-[9px]">-</td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">
+                          <input
+                            v-if="isBillPreviewCompleted"
+                            type="checkbox"
+                            disabled
+                            :checked="order.is_return === true"
+                            class="w-3 h-3 accent-blue-600 m-0 align-middle"
+                          />
+                          <input
+                            v-else
+                            type="checkbox"
+                            :checked="scanItemForms[order.id]?.is_return === true"
+                            @click.prevent="onReturnClick(order)"
+                            class="w-3 h-3 accent-blue-600 m-0 align-middle"
+                          />
+                          <div v-if="scanItemForms[order.id]?.is_return === true && scanItemForms[order.id]?.return_date" class="text-[8px] leading-none mt-0.5 whitespace-nowrap">
+                            {{ formatDateOnly(scanItemForms[order.id].return_date) }}
+                          </div>
+                        </td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">
+                          <input
+                            v-if="isBillPreviewCompleted"
+                            type="checkbox"
+                            disabled
+                            :checked="order.is_return === false"
+                            class="w-3 h-3 accent-blue-600 m-0 align-middle"
+                          />
+                          <input
+                            v-else
+                            type="checkbox"
+                            :checked="scanItemForms[order.id]?.is_return === false"
+                            :disabled="!canWithdrawScan(order) || isReturnChoiceLocked(order.id)"
+                            @click.prevent="onNotReturnClick(order)"
+                            class="w-3 h-3 accent-blue-600 m-0 align-middle"
+                          />
+                        </td>
+                        <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">
+                          <div class="space-y-1">
+                            <span v-if="isBillPreviewCompleted">{{ order.remark || '-' }}</span>
+                            <input
+                              v-else-if="scanItemForms[order.id]"
+                              v-model="scanItemForms[order.id].remark"
+                              type="text"
+                              :disabled="!canWithdrawScan(order)"
+                              class="w-full text-center bg-transparent outline-none p-0 m-0 border-none h-full focus:ring-0"
+                              style="line-height: 1;"
+                              placeholder="หมายเหตุ"
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                      <tr v-for="n in Math.max(0, 4 - billPreviewResult.items.length)" :key="'preview-empty-' + n">
+                        <td class="border border-gray-400 px-1 py-1 text-center text-gray-400">{{ billPreviewResult.items.length + n }}</td>
+                        <td v-for="i in 9" :key="i" class="border border-gray-400 px-1 py-1"></td>
+                      </tr>
+                      <tr class="bg-gray-50 font-semibold">
+                        <td colspan="3" class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-200">รวม</td>
+                        <td class="border border-gray-400 px-0.5 py-0.5 text-center text-blue-700">{{ getBillPreviewTotalAmount() }}</td>
+                        <td class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-400"></td>
+                        <td class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-400"></td>
+                        <td class="border border-gray-400 px-0.5 py-0.5"></td>
+                        <td class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-400"></td>
+                        <td class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-400"></td>
+                        <td class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-400"></td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <table class="w-full border-collapse text-[9px] mb-1">
+                    <thead>
+                      <tr>
+                        <th v-for="h in ['ผู้เบิก','ผู้อนุมัต','ผู้จ่าย','ผู้รับ','ผู้ตรวจสอบ/หน.พัสดุ']" :key="h" class="border border-gray-400 px-0.5 py-0.5 text-center bg-gray-300 w-1/5">{{ h }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td class="border border-gray-400 px-0.5 py-0 text-[9px]" style="height:40px; vertical-align:top;">{{ userLabel(billPreviewResult.items[0]?.created_by) }}</td>
+                        <td class="border border-gray-400 px-0.5 py-0 text-[9px]" style="height:40px; vertical-align:top;">{{ userLabel(billPreviewResult.items[0]?.updated_by) }}</td>
+                        <td class="border border-gray-400 px-0.5 py-0 text-[9px]" style="height:40px; vertical-align:top;">{{ userLabel(billPreviewResult.items[0]?.updated_by) }}</td>
+                        <td class="border border-gray-400 px-0.5 py-0 text-[9px]" style="height:40px; vertical-align:top;">{{ sharedReceiveBy || '' }}</td>
+                        <td class="border border-gray-400 px-0.5 py-0 text-[9px]" style="height:40px; vertical-align:top;">{{ sharedInspectorBy || '' }}</td>
+                      </tr>
+                      <tr>
+                        <td class="border border-gray-400 px-0.5 py-0.2">
+                          <div class="text-[9px] text-gray-500 mb-0.2">ลงชื่อตัวบรรจง</div>
+                          <div class="border-b border-gray-300 text-[9px] pb-0.2">{{ userLabel(billPreviewResult.items[0]?.created_by) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.5 py-0.2">
+                          <div class="text-[9px] text-gray-500 mb-0.2">ลงชื่อตัวบรรจง</div>
+                          <div class="border-b border-gray-300 text-[9px] pb-0.2">{{ userLabel(billPreviewResult.items[0]?.updated_by) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.5 py-0.2">
+                          <div class="text-[9px] text-gray-500 mb-0.2">ลงชื่อตัวบรรจง</div>
+                          <div class="border-b border-gray-300 text-[9px] pb-0.2">{{ userLabel(billPreviewResult.items[0]?.updated_by) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.5 py-0.2">
+                          <div class="text-[9px] text-gray-500 mb-0.2">ลงชื่อตัวบรรจง</div>
+                          <div class="border-b border-gray-300 text-[9px] pb-0.2">{{ sharedReceiveBy || '' }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.5 py-0.2">
+                          <div class="text-[9px] text-gray-500 mb-0.2">ลงชื่อตัวบรรจง</div>
+                          <div class="border-b border-gray-300 text-[9px] pb-0.2">{{ sharedInspectorBy || '' }}</div>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td class="border border-gray-400 px-0.2 py-0.1">
+                          <div class="text-[9px] text-gray-500 mb-0.1">วันที่</div>
+                          <div class="text-[9px]">{{ formatDateOnly(billPreviewResult.items[0]?.created_at) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.2 py-0.1">
+                          <div class="text-[9px] text-gray-500 mb-0.1">วันที่</div>
+                          <div class="text-[9px]">{{ formatDateOnly(billPreviewResult.items[0]?.updated_at) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.2 py-0.1">
+                          <div class="text-[9px] text-gray-500 mb-0.1">วันที่</div>
+                          <div class="text-[9px]">{{ formatDateOnly(billPreviewResult.items[0]?.updated_at) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.2 py-0.1">
+                          <div class="text-[9px] text-gray-500 mb-0.1">วันที่</div>
+                          <div class="text-[9px]">{{ formatDateOnly(billPreviewResult.items[0]?.updated_at) }}</div>
+                        </td>
+                        <td class="border border-gray-400 px-0.2 py-0.1">
+                          <div class="text-[9px] text-gray-500 mb-0.1">วันที่</div>
+                          <div class="text-[9px]">{{ formatDateOnly(billPreviewResult.items[0]?.updated_at) }}</div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <div class="flex items-end justify-between mt-2">
+                    <div class="text-[10px]">
+                      <span class="font-bold underline whitespace-nowrap leading-none">หมายเหตุ : กรณีเบิกใช้งานช่อมต้องแนบใบแจ้งช่อมทุกครั้ง</span>
+                    </div>
+                    <div class="flex flex-col items-center">
+                      <svg id="barcode-bill-preview" class="w-[180px] h-[55px]"></svg>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="!isBillPreviewCompleted && isReturnDateModalOpen" class="absolute inset-0 z-50 flex items-center justify-center">
+            <div class="absolute inset-0 bg-black/30" @click="closeReturnDateModal"></div>
+            <div class="relative w-full max-w-sm rounded-xl border bg-white p-5 shadow-2xl" style="border-color: var(--color-border)">
+              <div class="text-[14px] font-semibold" style="color: var(--color-text-primary)">{{ returnDateModalTitle }}</div>
+              <div class="mt-3 space-y-1">
+                <label class="text-[12px] font-medium" style="color: var(--color-text-muted)">วันที่ส่งคืน</label>
+                <input
+                  v-model="returnDateDraft"
+                  type="date"
+                  :disabled="returnDateReadOnly"
+                  class="w-full px-3 py-2 border rounded-lg text-[13px] focus:outline-none focus:ring-1"
+                  style="border-color: var(--color-border); background: var(--color-bg-body)"
+                />
+              </div>
+              <div class="mt-4 flex justify-end gap-2">
+                <button
+                  @click="closeReturnDateModal"
+                  class="px-4 py-2 rounded-lg text-[13px] font-medium border hover:bg-gray-50 transition-all"
+                  style="border-color: var(--color-border); color: var(--color-text-secondary)"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  @click="confirmReturnDate"
+                  v-if="!returnDateReadOnly"
+                  class="px-4 py-2 rounded-lg text-[13px] font-medium border transition-all hover:opacity-90"
+                  style="background: var(--color-primary); border-color: var(--color-border)"
+                >
+                  บันทึก
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-6 border-t flex justify-end gap-3" style="border-color: var(--color-border)">
+            <button
+              v-if="billPreviewResult.items.some(canWithdrawScan)"
+              @click="openApproveBillConfirm"
+              :disabled="saving"
+              class="px-5 py-2 rounded-lg text-[14px] font-medium border border-blue-500 bg-white text-blue-600 transition-all hover:bg-blue-50 disabled:opacity-50"
+            >
+              {{ saving ? 'กำลังบันทึก...' : 'อนุมัติใบเบิก' }}
+            </button>
+            <button @click="closeBillPreview" class="px-5 py-2 rounded-lg text-[14px] font-medium border hover:bg-gray-50 transition-all" style="border-color: var(--color-border); color: var(--color-text-secondary)">
+              ปิด
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <ConfirmDialog
+      :show="isApproveBillConfirmOpen"
+      title="ยืนยันอนุมัติใบเบิก"
+      :message="approveConfirmMessage"
+      confirmText="ตกลง"
+      cancelText="ยกเลิก"
+      type="primary"
+      @confirm="confirmApproveBill"
+      @cancel="closeApproveBillConfirm"
+    />
 
     <!-- ====== SCAN MODAL ====== -->
     <Transition name="slide-right">
@@ -858,10 +1562,36 @@ async function submitWithdraw() {
   opacity: 0;
 }
 
-input:focus,
-select:focus,
-textarea:focus {
+.paper-scroll-wrap {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  overflow-x: auto;
+  overflow-y: visible;
+  padding-bottom: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.paper-sheet {
+  width: 960px;
+  min-width: 960px;
+  margin: 0 auto;
+}
+
+input:focus:not(.border-none),
+select:focus:not(.border-none),
+textarea:focus:not(.border-none) {
   border-color: var(--color-primary) !important;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+/* ซ่อนลูกศรขึ้นลงใน input type number สำหรับในใบบิน */
+.hide-number-spinners::-webkit-outer-spin-button,
+.hide-number-spinners::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.hide-number-spinners[type=number] {
+  -moz-appearance: textfield;
 }
 </style>
