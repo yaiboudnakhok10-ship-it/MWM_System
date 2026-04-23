@@ -356,9 +356,47 @@ function canWithdrawScan(order) {
   return order.status === 'pending' || order.status === 'approved'
 }
 
+function getCurrentStock(order) {
+  const stock = Number(order?.items?.current_stock ?? 0)
+  return Number.isFinite(stock) ? stock : 0
+}
+
+function getMaxWithdrawableAmount(order) {
+  const form = scanItemForms.value?.[order.id]
+  const requested = Number(form?.max_amount ?? order.amount ?? 0)
+  const stock = getCurrentStock(order)
+  if (!Number.isFinite(requested)) return stock
+  if (stock <= 0) return 0
+  return Math.max(0, Math.min(requested, stock))
+}
+
+function isStockSufficient(order) {
+  const form = scanItemForms.value?.[order.id]
+  const amount = Number(form?.amount ?? 0)
+  const stock = getCurrentStock(order)
+  if (!Number.isFinite(amount)) return false
+  return amount <= stock
+}
+
+function hasInsufficientStock(order) {
+  if (!canWithdrawScan(order)) return false
+  return !isStockSufficient(order)
+}
+
 const isBillPreviewCompleted = computed(() => {
   const items = billPreviewResult.value?.items || []
   return items.length > 0 && items.every((row) => row.status === 'completed')
+})
+
+const hasStockInsufficient = computed(() => {
+  const items = billPreviewResult.value?.items || []
+  return items.some((order) => {
+    if (!canWithdrawScan(order)) return false
+    const form = scanItemForms.value?.[order.id]
+    if (!form) return false
+    if (form.status !== 'completed') return false
+    return !isStockSufficient(order)
+  })
 })
 
 const approveConfirmMessage = computed(() => {
@@ -368,6 +406,10 @@ const approveConfirmMessage = computed(() => {
 })
 
 function openApproveBillConfirm() {
+  if (hasStockInsufficient.value) {
+    ui.showToast('จำนวนสินค้าไม่เพียงพอ', 'error')
+    return
+  }
   isApproveBillConfirmOpen.value = true
 }
 
@@ -394,6 +436,17 @@ async function submitGroupWithdraw({ closeScanModal, closeBillPreviewModal }) {
   const items = scanResult.value?.items || []
   const withdrawableItems = items.filter((o) => canWithdrawScan(o))
   if (withdrawableItems.length === 0) return alert('ไม่มีรายการที่สามารถดำเนินการได้')
+
+  const insufficient = withdrawableItems.some((order) => {
+    const form = scanItemForms.value?.[order.id]
+    if (!form) return false
+    if (form.status !== 'completed') return false
+    return !isStockSufficient(order)
+  })
+  if (insufficient) {
+    ui.showToast('จำนวนสินค้าไม่เพียงพอ', 'error')
+    return
+  }
 
   saving.value = true
   try {
@@ -1029,7 +1082,11 @@ async function submitWithdraw() {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="(order, idx) in billPreviewResult.items" :key="order.id" class="bg-blue-50/40">
+                      <tr
+                        v-for="(order, idx) in billPreviewResult.items"
+                        :key="order.id"
+                        :class="hasInsufficientStock(order) ? 'bg-red-50 border border-red-400' : 'bg-blue-50/40'"
+                      >
                         <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">{{ idx + 1 }}</td>
                         <td class="border border-gray-400 px-1 py-1 text-center font-mono text-[9px]">{{ order.items?.item_code || '-' }}</td>
                         <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">{{ order.items?.item_name || '-' }}</td>
@@ -1040,7 +1097,7 @@ async function submitWithdraw() {
                             v-model.number="scanItemForms[order.id].amount"
                             type="number"
                             min="1"
-                            :max="scanItemForms[order.id].max_amount"
+                            :max="getMaxWithdrawableAmount(order)"
                             :disabled="!canWithdrawScan(order)"
                             class="w-full text-center bg-transparent outline-none p-0 m-0 border-none h-full focus:ring-0 hide-number-spinners"
                             style="line-height: 1;"
@@ -1099,6 +1156,12 @@ async function submitWithdraw() {
                         </td>
                         <td class="border border-gray-400 px-1 py-1 text-center text-[9px]">
                           <div class="space-y-1">
+                            <div
+                              v-if="hasInsufficientStock(order)"
+                              class="px-1 py-0.5 rounded border border-red-400 bg-red-100 text-[8px] font-semibold text-red-700 whitespace-nowrap"
+                            >
+                              สินค้าไม่เพียงพอ
+                            </div>
                             <span v-if="isBillPreviewCompleted">{{ order.remark || '-' }}</span>
                             <input
                               v-else-if="scanItemForms[order.id]"
@@ -1241,7 +1304,7 @@ async function submitWithdraw() {
             <button
               v-if="billPreviewResult.items.some(canWithdrawScan)"
               @click="openApproveBillConfirm"
-              :disabled="saving"
+              :disabled="saving || hasStockInsufficient"
               class="px-5 py-2 rounded-lg text-[14px] font-medium border border-blue-500 bg-white text-blue-600 transition-all hover:bg-blue-50 disabled:opacity-50"
             >
               {{ saving ? 'กำลังบันทึก...' : 'อนุมัติใบเบิก' }}
@@ -1473,7 +1536,7 @@ async function submitWithdraw() {
             </button>
             <button
               @click="submitScanWithdraw"
-              :disabled="saving || !scanResult.items.some(canWithdrawScan)"
+              :disabled="saving || !scanResult.items.some(canWithdrawScan) || scanResult.items.some((o) => canWithdrawScan(o) && scanItemForms[o.id]?.status === 'completed' && !isStockSufficient(o))"
               class="flex-1 py-2 rounded-lg text-[14px] font-medium text-slate-800 dark:text-white transition-all hover:opacity-90 disabled:opacity-50"
               style="background: var(--color-primary)"
             >

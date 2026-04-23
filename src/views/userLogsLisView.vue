@@ -29,13 +29,22 @@ function userLabel(userId) {
   return code ? `${name} (${code})` : name
 }
 
+function formatOldValue(value) {
+  if (value === null || value === undefined) return '-'
+  if (typeof value === 'string') return value || '-'
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
 async function fetchData() {
   loading.value = true
   try {
     const { data: rows, error } = await supabase
       .from('user_logs')
-      .select('id, system_user_id, action, user_agent, ip_address, created_at')
-      .eq('action', 'login')
+      .select('id, system_user_id, action, old_value, user_agent, ip_address, created_at')
       .order('created_at', { ascending: false })
 
     if (error) throw error
@@ -70,6 +79,7 @@ const filteredLogs = computed(() => {
   if (!key) return logs.value
   return logs.value.filter((row) => {
     const user = systemUsersById.value[row.system_user_id]
+    const oldValueText = formatOldValue(row.old_value)
     const haystack = [
       user?.fullname,
       user?.emp_code,
@@ -77,6 +87,7 @@ const filteredLogs = computed(() => {
       row.ip_address,
       row.user_agent,
       row.action,
+      oldValueText,
     ]
       .filter(Boolean)
       .join(' ')
@@ -108,8 +119,8 @@ function goNext() {
   <AppLayout>
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
       <div>
-        <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">บันทึกการเข้าสู่ระบบ</h1>
-        <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">แสดงรายการจาก user_logs เฉพาะ action = login</p>
+        <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">บันทึกการใช้งานระบบ</h1>
+        <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">แสดงรายการจาก user_logs (การกระทำ และรายละเอียด old_value)</p>
       </div>
     </div>
 
@@ -120,7 +131,7 @@ function goNext() {
           v-model="searchText"
           @input="onFilterChanged"
           type="text"
-          placeholder="ค้นหาชื่อ, รหัสพนักงาน, username, ip..."
+          placeholder="ค้นหาชื่อ, รหัสพนักงาน, การกระทำ, รายละเอียด, ip..."
           class="w-full pl-9 pr-4 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         />
@@ -154,13 +165,15 @@ function goNext() {
       </div>
 
       <div class="overflow-x-auto">
-        <table class="w-full text-[13px] min-w-[980px]">
+        <table class="w-full text-[13px] min-w-[1180px]">
           <thead>
             <tr style="border-bottom: 1px solid var(--color-border)">
               <th class="text-left px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-muted)">ผู้ใช้งาน</th>
+              <th class="text-left px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-muted)">การกระทำ</th>
+              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">รายละเอียด</th>
               <th class="text-left px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-muted)">IP Address</th>
               <th class="text-left px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-muted)">User Agent</th>
-              <th class="text-left px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-muted)">ล็อกอินเมื่อ</th>
+              <th class="text-left px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-muted)">เวลา</th>
             </tr>
           </thead>
           <tbody>
@@ -173,6 +186,10 @@ function goNext() {
               <td class="px-4 py-3 font-medium whitespace-nowrap" style="color: var(--color-text-primary)">
                 {{ userLabel(row.system_user_id) }}
               </td>
+              <td class="px-4 py-3 whitespace-nowrap" style="color: var(--color-text-secondary)">{{ row.action || '-' }}</td>
+              <td class="px-4 py-3" style="color: var(--color-text-muted)">
+                <span :title="formatOldValue(row.old_value)">{{ formatOldValue(row.old_value) }}</span>
+              </td>
               <td class="px-4 py-3 whitespace-nowrap" style="color: var(--color-text-secondary)">{{ row.ip_address || '-' }}</td>
               <td class="px-4 py-3" style="color: var(--color-text-muted)">
                 <span :title="row.user_agent || '-'">{{ row.user_agent || '-' }}</span>
@@ -180,10 +197,10 @@ function goNext() {
               <td class="px-4 py-3 text-[12px] whitespace-nowrap" style="color: var(--color-text-muted)">{{ formatDateTime(row.created_at) }}</td>
             </tr>
             <tr v-if="loading">
-              <td colspan="4" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
+              <td colspan="6" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
             </tr>
             <tr v-else-if="!loading && totalRows === 0">
-              <td colspan="4" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบข้อมูลล็อกอิน</td>
+              <td colspan="6" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบข้อมูล</td>
             </tr>
           </tbody>
         </table>

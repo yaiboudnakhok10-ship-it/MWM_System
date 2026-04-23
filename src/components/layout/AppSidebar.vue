@@ -19,7 +19,7 @@ const menuGroups = [
     items: [
       { label: 'รายการสินค้า', icon: 'fa-boxes-stacked', path: '/item-list' },
       { label: 'ประวัติการเพี่มสินค้า', icon: 'fa-clock-rotate-left', path: '/inventory-imports' },
-      { label: 'นำเข้าสินค้า', icon: 'fa-file-import', path: '/imports' },
+      { label: 'เพี่มสินค้า', icon: 'fa-file-import', path: '/imports' },
       { label: 'ประวัติการนำเข้าสินค้า', icon: 'fa-clock-rotate-left', path: '/inventory-history' },
     ]
   },
