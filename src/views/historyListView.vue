@@ -826,7 +826,6 @@ async function downloadPdf(group) {
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">เลขที่ใบบิน</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">รายการสินค้า</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">จำนวนรวม</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">กำหนดส่งคืน</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ผู้เบิก / ผู้จ่าย</th>
               <th class="text-center px-4 py-3 font-medium" style="color: var(--color-text-muted)">สถานะ</th>
               <th class="text-center px-4 py-3 font-medium" style="color: var(--color-text-muted)">PDF</th>
@@ -856,9 +855,6 @@ async function downloadPdf(group) {
                 {{ group.totalAmount }}
               </td>
               <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">
-                {{ getReturnDateText(group) }}
-              </td>
-              <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">
                 <p>{{ getDisplayName(group.requester) }}</p>
                 <p class="mt-0.5">{{ getDisplayName(group.approver) }}</p>
               </td>
@@ -880,10 +876,10 @@ async function downloadPdf(group) {
             </tr>
 
             <tr v-if="loading">
-              <td colspan="8" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
+              <td colspan="7" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
             </tr>
             <tr v-else-if="filteredHistoryGroups.length === 0">
-              <td colspan="8" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบประวัติการเบิก</td>
+              <td colspan="7" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบประวัติการเบิก</td>
             </tr>
           </tbody>
         </table>

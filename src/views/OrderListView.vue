@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 const auth = useAuthStore()
 
 const orders = ref([])
+const transactions = ref([])
 const items = ref([])
 const categories = ref([])
 const systemUsers = ref([])
@@ -38,25 +39,37 @@ const orderForm = ref({
 async function fetchData() {
   loading.value = true
   try {
-    const [{ data: itemsData, error: itemsError }, { data: categoriesData, error: categoriesError }, { data: ordersData, error: ordersError }, { data: usersData, error: usersError }] = await Promise.all([
+    const [
+      { data: itemsData, error: itemsError },
+      { data: categoriesData, error: categoriesError },
+      { data: ordersData, error: ordersError },
+      { data: usersData, error: usersError },
+      { data: txData, error: txError }
+    ] = await Promise.all([
       supabase.from('items').select('id, item_code, item_name, unit, category_id').order('item_name'),
       supabase.from('category').select('*').order('category_name'),
       supabase
         .from('order_req')
-        .select('*, items(item_code,item_name), category(category_name)')
+        .select('*, items(item_code,item_name,unit), category(category_name), requester:system_users!created_by(fullname, emp_code)')
         .order('created_at', { ascending: false }),
-      supabase.from('system_users').select('id, fullname, emp_code').order('fullname')
+      supabase.from('system_users').select('id, fullname, emp_code').order('fullname'),
+      supabase
+        .from('transactions')
+        .select('order_id, amount, unit, return_date, created_at')
+        .not('return_date', 'is', null)
     ])
 
     if (itemsError) throw itemsError
     if (categoriesError) throw categoriesError
     if (ordersError) throw ordersError
     if (usersError) throw usersError
+    if (txError) throw txError
 
     items.value = itemsData || []
     categories.value = categoriesData || []
     orders.value = ordersData || []
     systemUsers.value = usersData || []
+    transactions.value = txData || []
   } catch (err) {
     console.error('Error fetching order request data:', err.message)
     alert('ไม่สามารถโหลดข้อมูลคำขอเบิกสินค้าได้: ' + err.message)
@@ -69,20 +82,74 @@ onMounted(() => {
   fetchData()
 })
 
-const filteredOrders = computed(() => {
-  return orders.value.filter((row) => {
-    const keyword = searchText.value.trim().toLowerCase()
+function formatDateOnly(value) {
+  if (!value) return '-'
+  return new Date(value).toLocaleDateString('th-TH')
+}
+
+function txByOrderId(orderId) {
+  return transactions.value.find((row) => row.order_id === orderId) || null
+}
+
+const returnRows = computed(() => {
+  return orders.value
+    .map((row) => {
+      const tx = txByOrderId(row.id)
+      const returnDate = tx?.return_date || null
+      const amount = Number(tx?.amount ?? row.amount ?? 0)
+      const unit = tx?.unit || row.unit || row.items?.unit || ''
+      return {
+        ...row,
+        requestId: row.request_id || row.id,
+        returnDate,
+        withdrawAt: row.updated_at || row.created_at,
+        actualAmount: Number.isFinite(amount) ? amount : 0,
+        actualUnit: unit,
+        requesterInfo: row.requester || null
+      }
+    })
+    .filter((row) => row.status === 'completed' && row.is_return === true && row.returnDate)
+    .sort((a, b) => new Date(a.returnDate) - new Date(b.returnDate))
+})
+
+const filteredReturnRows = computed(() => {
+  const keyword = searchText.value.trim().toLowerCase()
+  if (!keyword) return returnRows.value
+
+  return returnRows.value.filter((row) => {
+    const requestId = String(row.requestId || '').toLowerCase()
     const itemCode = row.items?.item_code?.toLowerCase() || ''
     const itemName = row.items?.item_name?.toLowerCase() || ''
-    const note = row.note?.toLowerCase() || ''
-    const remark = row.remark?.toLowerCase() || ''
-
-    const matchSearch = !keyword || itemCode.includes(keyword) || itemName.includes(keyword) || note.includes(keyword) || remark.includes(keyword)
-    const matchCategory = selectedCategoryId.value === 'all' || row.category_id === selectedCategoryId.value
-    const matchStatus = selectedStatus.value === 'all' || row.status === selectedStatus.value
-
-    return matchSearch && matchCategory && matchStatus
+    const mr = (row.mr_number || '').toLowerCase()
+    const requesterName = (row.requesterInfo?.fullname || '').toLowerCase()
+    const note = (row.note || '').toLowerCase()
+    const remark = (row.remark || '').toLowerCase()
+    return (
+      requestId.includes(keyword) ||
+      itemCode.includes(keyword) ||
+      itemName.includes(keyword) ||
+      mr.includes(keyword) ||
+      requesterName.includes(keyword) ||
+      note.includes(keyword) ||
+      remark.includes(keyword)
+    )
   })
+})
+
+const returnGroups = computed(() => {
+  const groups = {}
+  for (const row of filteredReturnRows.value) {
+    const key = formatDateOnly(row.returnDate)
+    if (!groups[key]) {
+      groups[key] = {
+        key,
+        sortDate: row.returnDate,
+        rows: []
+      }
+    }
+    groups[key].rows.push(row)
+  }
+  return Object.values(groups).sort((a, b) => new Date(a.sortDate) - new Date(b.sortDate))
 })
 
 function openAddOrderSidebar() {
@@ -228,6 +295,16 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString('th-TH')
 }
 
+function isDueDate(value) {
+  if (!value) return false
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return false
+  const today = new Date()
+  d.setHours(0, 0, 0, 0)
+  today.setHours(0, 0, 0, 0)
+  return d.getTime() <= today.getTime()
+}
+
 function getCreatorLabel(createdBy) {
   if (!createdBy) return '-'
   const user = systemUsers.value.find((row) => row.id === createdBy)
@@ -250,18 +327,8 @@ async function copyLink(url) {
   <AppLayout>
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
       <div>
-        <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">คำขอเบิก / สั่งของ</h1>
-        <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">จัดการข้อมูลคำขอเบิก / สั่งของ</p>
-      </div>
-      <div class="flex flex-wrap gap-2">
-        <button
-          @click="openAddOrderSidebar"
-          class="flex items-center gap-2 px-4 py-1.5 rounded-lg border text-[13px] font-medium transition-all hover:bg-gray-100 active:scale-95"
-          style="background: var(--color-card); color: var(--color-text-primary); border-color: var(--color-border)"
-        >
-          <i class="fa-solid fa-plus"></i>
-          ขอเบิก / ขอซื้อสินค้า
-        </button>
+        <h1 class="text-[20px] font-semibold" style="color: var(--color-text-primary)">ข้อมูลการส่งคืน</h1>
+        <p class="text-[13px] mt-0.5" style="color: var(--color-text-muted)">แสดงเฉพาะรายการที่มีกำหนดส่งคืน</p>
       </div>
     </div>
 
@@ -271,33 +338,10 @@ async function copyLink(url) {
         <input
           v-model="searchText"
           type="text"
-          placeholder="ค้นหารหัสสินค้า, ชื่อสินค้า, หมายเหตุ..."
+          placeholder="ค้นหาเลขที่ใบบิน, MR, ชื่อสินค้า, ผู้เบิก..."
           class="w-full pl-9 pr-4 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
           style="border-color: var(--color-border); color: var(--color-text-primary)"
         />
-      </div>
-      <div class="w-full md:w-48">
-        <select
-          v-model="selectedCategoryId"
-          class="w-full px-3 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
-          style="border-color: var(--color-border); color: var(--color-text-primary)"
-        >
-          <option value="all">ทุกประเภทสินค้า</option>
-          <option v-for="cat in categories" :key="cat.id" :value="cat.id" style="background-color: var(--color-bg-card)">{{ cat.category_name }}</option>
-        </select>
-      </div>
-      <div class="w-full md:w-48">
-        <select
-          v-model="selectedStatus"
-          class="w-full px-3 py-2 bg-transparent border rounded-lg text-[13px] focus:outline-none focus:ring-1 transition-all"
-          style="border-color: var(--color-border); color: var(--color-text-primary)"
-        >
-          <option value="all" style="background-color: var(--color-bg-card)">ทุกสถานะ</option>
-          <option value="pending" style="background-color: var(--color-bg-card)">รออนุมัติ</option>
-          <option value="approved" style="background-color: var(--color-bg-card)">อนุมัติ</option>
-          <option value="rejected" style="background-color: var(--color-bg-card)">ไม่อนุมัติ</option>
-          <option value="completed" style="background-color: var(--color-bg-card)">เสร็จสิ้น</option>
-        </select>
       </div>
     </div>
 
@@ -306,62 +350,56 @@ async function copyLink(url) {
         <table class="w-full text-[13px]">
           <thead>
             <tr style="border-bottom: 1px solid var(--color-border)">
+              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">กำหนดส่งคืน</th>
+              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">เลขที่ใบบิน</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">สินค้า</th>
               <th class="text-right px-4 py-3 font-medium" style="color: var(--color-text-muted)">จำนวน</th>
               <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">หน่วย</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ประเภท</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">สถานะ</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">รายละเอียด/หมายเหตุ</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">เอกสาร/รูป</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ผู้สร้างคำขอ</th>
-              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">วันที่สร้าง</th>
+              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">ผู้เบิก</th>
+              <th class="text-left px-4 py-3 font-medium" style="color: var(--color-text-muted)">วันที่เบิก</th>
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="order in filteredOrders"
-              :key="order.id"
-              class="border-b last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-700/30 transition-colors"
-              style="border-color: var(--color-border)"
-            >
-              <td class="px-4 py-3">
-                <p class="font-medium" style="color: var(--color-text-primary)">{{ order.items?.item_name || '-' }}</p>
-                <p class="text-[11px]" style="color: var(--color-text-muted)">{{ order.items?.item_code || '-' }}</p>
-              </td>
-              <td class="px-4 py-3 text-right font-semibold" style="color: var(--color-text-primary)">{{ order.amount }}</td>
-              <td class="px-4 py-3" style="color: var(--color-text-muted)">{{ order.unit }}</td>
-              <td class="px-4 py-3" style="color: var(--color-text-secondary)">{{ order.category?.category_name || '-' }}</td>
-              <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded-full text-[11px] border" :class="getStatusClass(order.status)">
-                  {{ getStatusText(order.status) }}
-                </span>
-              </td>
-              <td class="px-4 py-3" style="color: var(--color-text-muted)">
-                <p>{{ order.note || '-' }}</p>
-                <p class="text-[11px] mt-0.5">{{ order.remark || '' }}</p>
-              </td>
-              <td class="px-4 py-3" style="color: var(--color-text-muted)">
-                <div class="flex flex-col gap-1">
-                  <div v-if="order.document_url" class="flex items-center gap-2">
-                    <a :href="order.document_url" target="_blank" class="text-blue-600 hover:underline">เอกสาร</a>
-                    <button class="text-[11px] px-2 py-0.5 border rounded hover:bg-gray-50" style="border-color: var(--color-border)" @click="copyLink(order.document_url)">คัดลอกลิงก์</button>
-                  </div>
-                  <div v-if="order.image_url" class="flex items-center gap-2">
-                    <a :href="order.image_url" target="_blank" class="text-emerald-600 hover:underline">รูปภาพ</a>
-                    <button class="text-[11px] px-2 py-0.5 border rounded hover:bg-gray-50" style="border-color: var(--color-border)" @click="copyLink(order.image_url)">คัดลอกลิงก์</button>
-                  </div>
-                  <span v-if="!order.document_url && !order.image_url">-</span>
-                </div>
-              </td>
-              <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">{{ getCreatorLabel(order.created_by) }}</td>
-              <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">{{ formatDateTime(order.created_at) }}</td>
-            </tr>
             <tr v-if="loading">
-              <td colspan="9" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
+              <td colspan="7" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">กำลังโหลดข้อมูล...</td>
             </tr>
-            <tr v-else-if="filteredOrders.length === 0">
-              <td colspan="9" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบคำขอเบิกสินค้า</td>
+            <tr v-else-if="returnGroups.length === 0">
+              <td colspan="7" class="px-4 py-8 text-center" style="color: var(--color-text-muted)">ไม่พบรายการที่มีกำหนดส่งคืน</td>
             </tr>
+            <template v-else v-for="group in returnGroups" :key="group.key">
+              <tr class="bg-blue-50/60 border-b" style="border-color: var(--color-border)">
+                <td colspan="7" class="px-4 py-3 font-semibold" style="color: var(--color-text-primary)">
+                  กำหนดส่งคืน:
+                  <span :class="isDueDate(group.sortDate) ? 'text-red-600' : ''">{{ group.key }}</span>
+                  • {{ group.rows.length }} รายการ
+                </td>
+              </tr>
+              <tr
+                v-for="order in group.rows"
+                :key="order.id"
+                class="border-b last:border-b-0 hover:bg-gray-50 dark:hover:bg-slate-700/30 transition-colors"
+                style="border-color: var(--color-border)"
+              >
+                <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">{{ formatDateOnly(order.returnDate) }}</td>
+                <td class="px-4 py-3">
+                  <p class="font-medium" style="color: var(--color-text-primary)">#{{ order.requestId }}</p>
+                  <p class="text-[11px]" style="color: var(--color-text-muted)">MR: {{ order.mr_number || '-' }}</p>
+                </td>
+                <td class="px-4 py-3">
+                  <p class="font-medium" style="color: var(--color-text-primary)">{{ order.items?.item_name || '-' }}</p>
+                  <p class="text-[11px]" style="color: var(--color-text-muted)">{{ order.items?.item_code || '-' }}</p>
+                </td>
+                <td class="px-4 py-3 text-right font-semibold" style="color: var(--color-text-primary)">{{ order.actualAmount }}</td>
+                <td class="px-4 py-3" style="color: var(--color-text-muted)">{{ order.actualUnit }}</td>
+                <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">
+                  <span v-if="order.requesterInfo?.fullname">
+                    {{ order.requesterInfo.emp_code ? `${order.requesterInfo.fullname} (${order.requesterInfo.emp_code})` : order.requesterInfo.fullname }}
+                  </span>
+                  <span v-else>{{ getCreatorLabel(order.created_by) }}</span>
+                </td>
+                <td class="px-4 py-3 text-[12px]" style="color: var(--color-text-muted)">{{ formatDateTime(order.withdrawAt) }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
